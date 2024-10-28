@@ -60,11 +60,11 @@ namespace fin {
 
 //using json = nlohmann::json;
 template <typename Tgpu, typename Tref, typename Tmix = Tgpu>
-class BNFin : public BaseFin
+class BNFin : public BaseFin<T>
 {
     public:
-    BNFin() : BaseFin() {}
-    BNFin(json _job) : BaseFin(), job(_job)
+    BNFin() : BaseFin<T>() {}
+    BNFin(json _job) : BaseFin<T>(), job(_job)
     {
         if(job.contains("config"))
             PrepBatchNorm();
@@ -72,7 +72,7 @@ class BNFin : public BaseFin
 
     void PrepBatchNorm()
     {
-        BaseFin::VerifyDevProps(job["arch"], job["num_cu"]);
+        BaseFin<T>::VerifyDevProps(job["arch"], job["num_cu"]);
         command         = job["config"];
         command["bias"] = 0;
         SetBNDescriptor();
@@ -100,7 +100,7 @@ class BNFin : public BaseFin
 
     float PerfTune(const miopen::Handle& h,
                    const miopen::batchnorm::ProblemDescription& problem,
-                   const miopen::solver::Id& solver_id,
+                   const miopen::solver::ConvSolution& solution,
                    miopen::PerformanceDb& db,
                    miopen::ExecutionContext& perf_ctx);
 
@@ -206,7 +206,7 @@ int BNFin<Tgpu, Tref, Tmix>::TestApplicability()
     // cppcheck-suppress unreadVariable
     auto ctx = miopen::ExecutionContext(&handle);
 #if MIOPEN_MODE_NOGPU
-    BaseFin::InitNoGpuHandle(handle, job["arch"], job["num_cu"]);
+    BaseFin<T>::InitNoGpuHandle(handle, job["arch"], job["num_cu"]);
 #else
     throw std::runtime_error("MIOpen needs to be compiled with the NOGPU backend "
                              "to test applicability");
@@ -550,7 +550,7 @@ int BNFin<Tgpu, Tref, Tmix>::MIOpenCompile(TuningOp tuning_op)
     auto ctx = miopen::ExecutionContext(&handle);
     GetHandle().EnableProfiling(true);
 #if MIOPEN_MODE_NOGPU
-    BaseFin::InitNoGpuHandle(handle, job["arch"], job["num_cu"]);
+    BaseFin<T>::InitNoGpuHandle(handle, job["arch"], job["num_cu"]);
 #else
     throw std::runtime_error("MIOpen needs to be compiled with the NOGPU backend "
                              "for Batch Norm find_compile");
@@ -656,7 +656,7 @@ int BNFin<Tgpu, Tref, Tmix>::MIOpenEval(TuningOp tuning_op)
 #if MIOPEN_MODE_NOGPU
     throw std::runtime_error("Unable to run MIOpenEval, Invalid MIOpen backend: HIPNOGPU");
 #endif
-    const auto conv_dir = GetDirection();
+    const auto bn_dir = GetDirection();
     // The first arg to the DataInvokeParams changes based on direction
     const auto problem = GetProblemDescription();
 
@@ -691,110 +691,117 @@ int BNFin<Tgpu, Tref, Tmix>::MIOpenEval(TuningOp tuning_op)
     else if(tuning_op == TuningOp::Find)
         comp_res_str = "miopen_find_compile_result";
 
-    for(const auto& eval_slv : job[comp_res_str])
+
+
+    for(const auto& solution : GetBNSolutions(ctx))
     {
-        json res_item;
-        std::error_code ec;
-        fs::remove_all(miopen::GetCachePath(false), ec);
-        // fs::remove_all(miopen::GetCachePath(true), ec);
-        if(ec)
-        {
-            std::cerr << "Error while removing MIOpen cache: " << ec.message();
-        }
-        auto process_solver = [&]() -> bool {
-            const std::string solver_name = eval_slv["solver_name"];
-            std::cerr << "Processing solver: " << solver_name << std::endl;
-            const auto solver_id    = miopen::solver::Id{solver_name};
-            //const auto& s           = solver_id.GetSolver();
-					  const auto solver = miopen::fin::FinInterface::GetBatchNormSolver(solver_name);
-            res_item["solver_name"] = solver_name;
-            res_item["algorithm"]   = GetAlgorithm();
-
-            if(dynamic_only && !solver.IsDynamic())
+       json res_item;
+       res_item["reason"]    = std::string("No solutions: ");
+       for(const auto& eval_slv : job[comp_res_str])
+       {
+            auto process_solver = [&]() -> bool {
+            // remove the user db files
+            fs::remove_all(miopen::GetCachePath(false));
+            std::cerr << "Processing Solver: " << solution.solver_id << std::endl;
+            if(solution.solver_id == eval_slv)
             {
-                res_item["reason"] = "Not Dynamic";
-                std::cerr << "Skipping static solver: " << solver_name << std::endl;
-                return false;
-            }
+								res_item["solver_name"] = solution.solver_id;
+								const auto solver = miopen::fin::FinInterface::GetBatchNormSolver(solution.solver_id);
+								res_item["algorithm"]   = GetAlgorithm();
 
-            // Get the binary
-            std::cerr << "Applicable solver: " << solver_name << ", loading binaries from fin input"
-                      << std::endl;
-            if(!LoadJsonKernelList(h, eval_slv["kernel_objects"], res_item))
-                return false;
+								if(dynamic_only && !solver.IsDynamic())
+								{
+										res_item["reason"] = "Not Dynamic";
+										std::cerr << "Skipping static solver: " << solver_name << std::endl;
+										return false;
+								}
 
-            auto solution = solver.FindSolution(ctx, problem, db, {});
-            if(!solution.Succeeded())
-                std::cerr << "Applicable solver did not succeeded" << std::endl;
-            SolutionHasProgram(h, solution);
+								// Get the binary
+								std::cerr << "Applicable solver: " << solver_name << ", loading binaries from fin input"
+													<< std::endl;
+								if(!LoadJsonKernelList(h, eval_slv["kernel_objects"], res_item))
+										return false;
 
-            std::cerr << "Checking workspace size" << std::endl;
-            if(solution.workspace_sz > workspace.desc.GetNumBytes())
-            {
-                std::cerr << "Allocating " << solution.workspace_sz << " bytes for workspace"
-                          << std::endl;
-                workspace = tensor<Tgpu>{
-                    q,
-                    std::vector<size_t>{static_cast<size_t>(solution.workspace_sz / sizeof(Tgpu))},
-                    false,
-                    false};
-                workspace.AllocateBuffers();
-            }
-            if(!solution.invoker_factory)
-            {
-                std::cerr << "Invoker not implemeted" << std::endl;
-                res_item["reason"] = "Invoker not implemented";
-                return false;
-            }
-            try
-            {
-                float kernel_time = -1;
-                if(tuning_op == TuningOp::Perf)
-                    kernel_time = PerfTune(h, problem, solver_id, db, ctx);
-                else if(tuning_op == TuningOp::Find)
-                    kernel_time = FindTune(h, solution);
+								SolutionHasProgram(h, solution);
 
-                json kern_objs = BuildJsonKernelList(h, solution.construction_params);
+								std::cerr << "Checking workspace size" << std::endl;
+								if(solution.workspace_sz > workspace.desc.GetNumBytes())
+								{
+										std::cerr << "Allocating " << solution.workspace_sz << " bytes for workspace"
+															<< std::endl;
+										workspace = tensor<Tgpu>{
+												q,
+												std::vector<size_t>{static_cast<size_t>(solution.workspace_sz / sizeof(Tgpu))},
+												false,
+												false};
+										workspace.AllocateBuffers();
+								}
+								if(!solution.invoker_factory)
+								{
+										std::cerr << "Invoker not implemeted" << std::endl;
+										res_item["reason"] = "Invoker not implemented";
+										return false;
+								}
+								try
+								{
+										float kernel_time = -1;
+										if(tuning_op == TuningOp::Perf)
+												kernel_time = PerfTune(h, problem, solution, db, ctx);
+										else if(tuning_op == TuningOp::Find)
+												kernel_time = FindTune(h, solution);
 
-                res_item["tunable"] = solver.IsTunable();
-                res_item["params"]     = solver.GetPerfCfgParams(ctx, problem, db);
-                res_item["workspace"] = solution.workspace_sz;
-                res_item["time"]      = kernel_time;
-                //res_item["layout"]     = problem.GetInLayout();
-                //res_item["data_type"]  = problem.GetInDataType();
-                res_item["direction"] = bn_dir;
-                //res_item["bias"]      = problem.GetBias();
-                res_item["kernel_objects"] = kern_objs;
-                res_item["reason"]         = "Success";
-                if(kernel_time == 0.0)
-                    res_item["reason"] = "Invoker returned time = 0";
-                if(kernel_time < 0)
-                    res_item["reson"] = "kernel_time not measured";
-            }
-            catch(const std::exception& e)
-            {
-                res_item["reason"] = std::string("Invoker exception: ") + e.what();
-                std::cerr << res_item["reason"] << std::endl;
-                return false;
-            }
+										json kern_objs = BuildJsonKernelList(h, solution.construction_params);
 
-            return true;
-        };
+										res_item["tunable"] = solver.IsTunable();
+										res_item["params"]     = solver.GetPerfCfgParams(ctx, problem, db);
+										res_item["workspace"] = solution.workspace_sz;
+										res_item["time"]      = kernel_time;
+										//res_item["layout"]     = problem.GetInLayout();
+										//res_item["data_type"]  = problem.GetInDataType();
+										res_item["direction"] = bn_dir;
+										//res_item["bias"]      = problem.GetBias();
+										res_item["kernel_objects"] = kern_objs;
+										res_item["reason"]         = "Success";
+										if(kernel_time == 0.0)
+												res_item["reason"] = "Invoker returned time = 0";
+										if(kernel_time < 0)
+												res_item["reson"] = "kernel_time not measured";
+								}
+								catch(const std::exception& e)
+								{
+										res_item["reason"] = std::string("Invoker exception: ") + e.what();
+										std::cerr << res_item["reason"] << std::endl;
+										return false;
+								}
+
+								return true;
+								}
+            };
+
         auto res = process_solver();
-    }
-    return true;
+        res_item["evaluated"] = res;
+        eval_result.push_back(res_item);
+
+       }//for each solver
+    } //for each solution
+
+    if(tuning_op == TuningOp::Perf)
+        output["miopen_perf_eval_result"] = eval_result;
+    else if(tuning_op == TuningOp::Find)
+        output["miopen_find_eval_result"] = eval_result;
+    return 1;
+
 }
 
 template <typename Tgpu, typename Tref, typename Tmix>
 float BNFin<Tgpu, Tref, Tmix>::PerfTune(const miopen::Handle& h,
                                   const miopen::batchnorm::ProblemDescription& problem,
-                                  const miopen::solver::Id& solver_id,
+                                  const miopen::solver::ConvSolution& solution,
                                   miopen::PerformanceDb& db,
                                   miopen::ExecutionContext& perf_ctx)
 {
     
-    const auto& s       = solver_id.GetSolver();
-    const auto conv_dir = GetDirection();
+    const auto bn_dir = GetDirection();
     float kernel_time   = -1;
     perf_ctx.do_search  = true;
     perf_ctx.db_update  = true;
@@ -803,15 +810,15 @@ float BNFin<Tgpu, Tref, Tmix>::PerfTune(const miopen::Handle& h,
     // direction and it does not have a
     // copy constructor or a default constructor
     std::cerr << "Find Solution" << std::endl;
-    if(conv_dir == miopen::batchnorm::Direction::ForwardTraining)
+    if(bn_dir == miopen::debug::BatchNormDirection_t::ForwardTraining)
     {
         const auto invoke_ctx = [&]() {
 					auto tmp                  = miopen::batchnorm::FwdTrainInvokeParams{};
-					tmp.type                  = InvokeType::Run;
+					tmp.type                  = miopen::InvokeType::Run;
 					tmp.x                     = in.GetVectorData();
 					tmp.y                     = out.GetVectorData();
 					tmp.bnScale               = bnScale.GetVectorData();
-					tmp.bnBias                = bnBias.GetVectorData();
+					tmp.bnBias                = bias.GetVectorData();
 					tmp.expAvgFactor          = expAvgFactor;
 					tmp.resultRunningMean     = runMean.GetVectorData();
 					tmp.resultRunningVariance = runVariance.GetVectorData();
@@ -821,7 +828,6 @@ float BNFin<Tgpu, Tref, Tmix>::PerfTune(const miopen::Handle& h,
 					return tmp;
     }();
 
-        auto solution = s.FindSolution(perf_ctx, problem, db, invoke_ctx); // forcing search here
         // check if binaries were added, prep invoker for gathering timing
         SolutionHasProgram(h, solution);
 
@@ -829,23 +835,22 @@ float BNFin<Tgpu, Tref, Tmix>::PerfTune(const miopen::Handle& h,
             h.PrepareInvoker(*solution.invoker_factory, solution.construction_params);
         kernel_time = BenchmarkInvoker(invoker, h, invoke_ctx);
     }
-    else if(conv_dir == miopen::batchnorm::Direction::ForwardInference)
+    else if(bn_dir == miopen::debug::BatchNormDirection_t::ForwardInference)
     {
-				const auto invoke_params = [&]() {
-									auto tmp              = batchnorm::InfInvokeParams{};
-								tmp.type              = InvokeType::Run;
+				const auto invoke_ctx = [&]() {
+								auto tmp              = miopen::batchnorm::InfInvokeParams{};
+								tmp.type              = miopen::InvokeType::Run;
 								tmp.xDesc             = &in.GetTensor().desc,
 								tmp.x                 = in.GetVectorData();
 								tmp.y                 = out.GetVectorData();
 								tmp.bnScale           = bnScale.GetVectorData();
-								tmp.bnBias            = bnBias.GetVectorData();
-								tmp.estimatedMean     = estimatedMean;
-								tmp.estimatedVariance = estimatedVariance;
+								tmp.bnBias            = bias.GetVectorData();
+								tmp.estimatedMean     = estMean.GetVectorData();
+								tmp.estimatedVariance = estVariance;
 								tmp.epsilon           = epsilon;
 								return tmp;
 						}();
 
-        auto solution = s.FindSolution(perf_ctx, problem, db, invoke_ctx); // forcing search here
         // check if binaries were added, prep invoker for gathering timing
         SolutionHasProgram(h, solution);
 
@@ -853,12 +858,12 @@ float BNFin<Tgpu, Tref, Tmix>::PerfTune(const miopen::Handle& h,
             h.PrepareInvoker(*solution.invoker_factory, solution.construction_params);
         kernel_time = BenchmarkInvoker(invoker, h, invoke_ctx);
     }
-    else if(conv_dir == miopen::batchnorm::Direction::Backward)
+    else if(bn_dir == miopen::debug::BatchNormDirection_t::Backward)
     {
 
-			 const auto invoke_params = [&]() {
-						auto tmp              = batchnorm::BwdInvokeParams{};
-						tmp.type              = InvokeType::Run;
+			 const auto invoke_ctx = [&]() {
+						auto tmp              = miopen::batchnorm::BwdInvokeParams{};
+						tmp.type              = miopen::InvokeType::Run;
 						tmp.x                 = in.GetVectorData();
 						tmp.dy                = dy.GetVectorData();//??right tensor?
 						tmp.dx                = out_ref.GetVectorData();//??right tensor?
@@ -867,11 +872,10 @@ float BNFin<Tgpu, Tref, Tmix>::PerfTune(const miopen::Handle& h,
 						//tmp.resultBnBiasDiff  = resultBnBiasDiff; //??
 						tmp.epsilon           = epsilon;
 						tmp.savedMean         = savedMean.GetVectorData();
-						tmp.savedInvVariance  = savedInvVariance.GetVectorData();
+						tmp.savedInvVariance  = savedVariance.GetVectorData();
 						return tmp;
 				}();
 
-        auto solution = s.FindSolution(perf_ctx, problem, db, invoke_ctx); // forcing search here
         // check if binaries were added, prep invoker for gathering timing
         SolutionHasProgram(h, solution);
 
@@ -882,13 +886,11 @@ float BNFin<Tgpu, Tref, Tmix>::PerfTune(const miopen::Handle& h,
     else
     {
         std::ostringstream ss;
-        ss << "Invalid Direction: " << static_cast<int>(conv_dir);
+        ss << "Invalid Direction: " << static_cast<int>(bn_dir);
         throw std::runtime_error(ss.str());
     }
 
     return kernel_time;
-    */
-    return 0;
 }
 
 template <typename Tgpu, typename Tref, typename Tmix>
