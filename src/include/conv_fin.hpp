@@ -1749,10 +1749,10 @@ int ConvFin<Tgpu, Tref>::CalcWorkspace()
         std::max(std::max(ws_sizeof_find_bwd, ws_sizeof_find_wrw), ws_sizeof_find_fwd);
     if(wsSizeof != 0)
         workspace = tensor<Tgpu>{q,
-                                       std::vector<unsigned int>{static_cast<unsigned int>(
-                                           std::ceil(wsSizeof / sizeof(Tgpu)))},
-                                       true,
-                                       false};
+                                 std::vector<unsigned int>{
+                                     static_cast<unsigned int>(std::ceil(wsSizeof / sizeof(Tgpu)))},
+                                 true,
+                                 false};
     return wsSizeof;
 }
 
@@ -1763,8 +1763,8 @@ Tgpu init_in(bool is_int8, size_t idx)
     if(is_int8)
     {
         float Data_scale = 127.0;
-        return static_cast<Tgpu>(Data_scale *
-                                 prng::RAN_GEN<float>(static_cast<float>(0.0), static_cast<float>(1.0)));
+        return static_cast<Tgpu>(
+            Data_scale * prng::RAN_GEN<float>(static_cast<float>(0.0), static_cast<float>(1.0)));
     }
     else
     {

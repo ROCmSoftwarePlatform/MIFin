@@ -380,8 +380,8 @@ std::ostream& operator<<(std::ostream& os, const std::vector<T>& vs)
 
 template <typename Tgpu>
 float BaseFin::BenchmarkInvoker(const miopen::Invoker& invoker,
-                       const miopen::Handle& h,
-                       const Tgpu& invoke_ctx)
+                                const miopen::Handle& h,
+                                const Tgpu& invoke_ctx)
 {
     float kernel_time;
     std::vector<float> ktimes;
