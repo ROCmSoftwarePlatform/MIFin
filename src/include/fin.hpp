@@ -298,6 +298,7 @@ class BaseFin
         }
     }
 
+    /*
     float BenchmarkInvoker(const miopen::Invoker& invoker,
                            const miopen::Handle& h,
                            const miopen::conv::DataInvokeParams& invoke_ctx)
@@ -338,7 +339,12 @@ class BaseFin
         kernel_time = ktimes[(ktimes.size() - 1) / 2];
         std::cerr << "kernel_time median : " << kernel_time << std::endl;
         return kernel_time;
-    }
+    }*/
+
+    template <typename Tgpu>
+    float BenchmarkInvoker(const miopen::Invoker& invoker,
+                           const miopen::Handle& h,
+                           const Tgpu& invoke_ctx);
 
     protected:
     template <typename Tgpu>
@@ -370,6 +376,28 @@ std::ostream& operator<<(std::ostream& os, const std::vector<T>& vs)
         os << v << " ";
     os << "}";
     return os;
+}
+
+template <typename Tgpu>
+float BaseFin::BenchmarkInvoker(const miopen::Invoker& invoker,
+                       const miopen::Handle& h,
+                       const Tgpu& invoke_ctx)
+{
+    float kernel_time;
+    std::vector<float> ktimes;
+    // warmup run
+    invoker(h, invoke_ctx);
+    for(auto idx = 0; idx < INVOKE_LIMIT; idx++)
+    {
+        invoker(h, invoke_ctx);
+        kernel_time = h.GetKernelTime();
+        ktimes.push_back(kernel_time);
+        std::cerr << "kernel_time : " << kernel_time << std::endl;
+    }
+    sort(ktimes.begin(), ktimes.end());
+    kernel_time = ktimes[(ktimes.size() - 1) / 2];
+    std::cerr << "kernel_time median : " << kernel_time << std::endl;
+    return kernel_time;
 }
 } // namespace fin
 #endif // GUARD_FIN_HPP

@@ -386,7 +386,7 @@ float ConvFin<Tgpu, Tref>::PerfTune(const miopen::Handle& h,
 
         const auto invoker =
             h.PrepareInvoker(*solution.invoker_factory, solution.construction_params);
-        kernel_time = BenchmarkInvoker(invoker, h, invoke_ctx);
+        kernel_time = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
     }
     else if(conv_dir == miopen::conv::Direction::BackwardData)
     {
@@ -407,7 +407,7 @@ float ConvFin<Tgpu, Tref>::PerfTune(const miopen::Handle& h,
 
         const auto invoker =
             h.PrepareInvoker(*solution.invoker_factory, solution.construction_params);
-        kernel_time = BenchmarkInvoker(invoker, h, invoke_ctx);
+        kernel_time = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
     }
     else if(conv_dir == miopen::conv::Direction::BackwardWeights)
     {
@@ -428,7 +428,7 @@ float ConvFin<Tgpu, Tref>::PerfTune(const miopen::Handle& h,
 
         const auto invoker =
             h.PrepareInvoker(*solution.invoker_factory, solution.construction_params);
-        kernel_time = BenchmarkInvoker(invoker, h, invoke_ctx);
+        kernel_time = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
     }
     else
     {
@@ -466,7 +466,7 @@ float ConvFin<Tgpu, Tref>::FindTune(const miopen::Handle& h,
                                            workspace.gpuData.buf.get(),
                                            workspace.desc.GetNumBytes(),
                                            convDesc.attribute.gfx90aFp16alt.GetFwd()};
-        kernel_time = BenchmarkInvoker(invoker, h, invoke_ctx);
+        kernel_time = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
     }
     else if(conv_dir == miopen::conv::Direction::BackwardData)
     {
@@ -480,7 +480,7 @@ float ConvFin<Tgpu, Tref>::FindTune(const miopen::Handle& h,
                                            workspace.gpuData.buf.get(),
                                            workspace.desc.GetNumBytes(),
                                            convDesc.attribute.gfx90aFp16alt.GetBwd()};
-        kernel_time = BenchmarkInvoker(invoker, h, invoke_ctx);
+        kernel_time = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
     }
     else if(conv_dir == miopen::conv::Direction::BackwardWeights)
     {
@@ -494,7 +494,7 @@ float ConvFin<Tgpu, Tref>::FindTune(const miopen::Handle& h,
                                           workspace.gpuData.buf.get(),
                                           workspace.desc.GetNumBytes(),
                                           convDesc.attribute.gfx90aFp16alt.GetWrW()};
-        kernel_time = BenchmarkInvoker(invoker, h, invoke_ctx);
+        kernel_time = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
     }
     else
     {
