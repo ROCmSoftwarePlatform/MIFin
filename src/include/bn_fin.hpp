@@ -572,8 +572,8 @@ int BNFin<Tgpu, Tref, Tmix>::MIOpenCompile(TuningOp tuning_op)
                (!job.contains("solvers")))
             {
                 res_item["solver_name"] = sln.solver_id;
-                const auto solver = miopen::fin_interface::GetBatchNormSolver(sln.solver_id);
-                res_item["algorithm"] = GetAlgorithm();
+                const auto solver       = miopen::fin_interface::GetBatchNormSolver(sln.solver_id);
+                res_item["algorithm"]   = GetAlgorithm();
 
                 if(tuning_op == TuningOp::Perf)
                 {
@@ -643,7 +643,7 @@ int BNFin<Tgpu, Tref, Tmix>::MIOpenEval(TuningOp tuning_op)
     const auto network_config  = problem.MakeNetworkConfig();
     output["network_config"]   = network_config;
     std::ostringstream ss;
-    // problem.Serialize(ss);
+    problem.Serialize(ss);
     output["db_key"] = ss.str();
 
     auto db = GetDb(ctx, problem);
@@ -665,16 +665,15 @@ int BNFin<Tgpu, Tref, Tmix>::MIOpenEval(TuningOp tuning_op)
 
     for(const auto& solution : GetBNSolutions(ctx))
     {
-        json res_item;
-        res_item["reason"] = std::string("No solutions: ");
         for(const auto& eval_slv : job[comp_res_str])
         {
-            auto process_solver = [&]() -> bool {
-                // remove the user db files
-                fs::remove_all(miopen::GetCachePath(false));
-                std::cerr << "Processing Solver: " << solution.solver_id << std::endl;
-                if(solution.solver_id == eval_slv)
-                {
+            json res_item;
+            if(solution.solver_id == eval_slv)
+            {
+                auto process_solver = [&]() -> bool {
+                    // remove the user db files
+                    fs::remove_all(miopen::GetCachePath(false));
+                    std::cerr << "Processing Solver: " << solution.solver_id << std::endl;
                     res_item["solver_name"] = solution.solver_id;
                     const auto solver =
                         miopen::fin_interface::GetBatchNormSolver(solution.solver_id);
@@ -746,12 +745,12 @@ int BNFin<Tgpu, Tref, Tmix>::MIOpenEval(TuningOp tuning_op)
                     }
 
                     return true;
-                }
-            };
+                };
 
-            auto res              = process_solver();
-            res_item["evaluated"] = res;
-            eval_result.push_back(res_item);
+                auto res              = process_solver();
+                res_item["evaluated"] = res;
+                eval_result.push_back(res_item);
+            }
 
         } // for each solver
     }     // for each solution
@@ -786,7 +785,7 @@ template <typename Tgpu, typename Tref, typename Tmix>
 float BNFin<Tgpu, Tref, Tmix>::FindTune(const miopen::Handle& h,
                                         const miopen::solver::ConvSolution& solution)
 {
-    float kernel_time    = -1;
+    float kernel_time     = -1;
     const auto invoke_ctx = GetInvokeCtx();
     const auto invoker = h.PrepareInvoker(*solution.invoker_factory, solution.construction_params);
     kernel_time        = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
