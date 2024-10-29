@@ -572,7 +572,7 @@ int BNFin<Tgpu, Tref, Tmix>::MIOpenCompile(TuningOp tuning_op)
                (!job.contains("solvers")))
             {
                 res_item["solver_name"] = sln.solver_id;
-                const auto solver = miopen::fin::FinInterface::GetBatchNormSolver(sln.solver_id);
+                const auto solver = miopen::fin_interface::GetBatchNormSolver(sln.solver_id);
                 res_item["algorithm"] = GetAlgorithm();
 
                 if(tuning_op == TuningOp::Perf)
@@ -677,7 +677,7 @@ int BNFin<Tgpu, Tref, Tmix>::MIOpenEval(TuningOp tuning_op)
                 {
                     res_item["solver_name"] = solution.solver_id;
                     const auto solver =
-                        miopen::fin::FinInterface::GetBatchNormSolver(solution.solver_id);
+                        miopen::fin_interface::GetBatchNormSolver(solution.solver_id);
                     res_item["algorithm"] = GetAlgorithm();
 
                     if(dynamic_only && !solver.IsDynamic())
@@ -786,7 +786,7 @@ template <typename Tgpu, typename Tref, typename Tmix>
 float BNFin<Tgpu, Tref, Tmix>::FindTune(const miopen::Handle& h,
                                         const miopen::solver::ConvSolution& solution)
 {
-    float kernel_tim e    = -1;
+    float kernel_time    = -1;
     const auto invoke_ctx = GetInvokeCtx();
     const auto invoker = h.PrepareInvoker(*solution.invoker_factory, solution.construction_params);
     kernel_time        = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
@@ -859,7 +859,7 @@ const miopen::AnyInvokeParams BNFin<Tgpu, Tref, Tmix>::GetInvokeCtx()
             throw std::runtime_error(ss.str());
         }
     };
-    return invoke_ctx;
+    return invoke_ctx();
 }
 
 } // namespace fin
