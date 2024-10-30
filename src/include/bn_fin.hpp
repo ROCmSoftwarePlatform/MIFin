@@ -637,7 +637,7 @@ int BNFin<Tgpu, Tref, Tmix>::MIOpenEval(TuningOp tuning_op)
     // cppcheck-suppress unreadVariable
     auto ctx = miopen::ExecutionContext(&h);
     ctx.SetStream(&(h));
-    // problem.SetupFloats(ctx);
+    // problem.SetupFloats(ctx); ?? not available in batchnorm::PD
 
     output["is_winograd_only"] = false;
     const auto network_config  = problem.MakeNetworkConfig();
@@ -726,10 +726,10 @@ int BNFin<Tgpu, Tref, Tmix>::MIOpenEval(TuningOp tuning_op)
                         res_item["params"]    = solver.GetPerfCfgParams(ctx, problem, db);
                         res_item["workspace"] = solution.workspace_sz;
                         res_item["time"]      = kernel_time;
-                        // res_item["layout"]     = problem.GetInLayout();
-                        // res_item["data_type"]  = problem.GetInDataType();
+                        res_item["layout"]    = problem.GetInLayout();
+                        res_item["data_type"] = problem.GetXDesc().GetType();
                         res_item["direction"] = bn_dir;
-                        // res_item["bias"]      = problem.GetBias();
+                        // res_item["bias"]      = problem.GetBias(); dy?
                         res_item["kernel_objects"] = kern_objs;
                         res_item["reason"]         = "Success";
                         if(kernel_time == 0.0)
