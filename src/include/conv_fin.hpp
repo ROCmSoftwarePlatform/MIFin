@@ -759,7 +759,7 @@ int ConvFin<Tgpu, Tref>::GetNetworkConfig()
     auto db_key = ss.str();
 
     output["network_config"] = network_config;
-    output["db_key"] = db_key;
+    output["db_key"]         = db_key;
     return 0;
 }
 
@@ -1239,7 +1239,7 @@ int ConvFin<Tgpu, Tref>::ProcessStep(const std::string& step_name)
     if(step_name == "applicability")
         return TestApplicability();
     if(step_name == "network_config")
-	return GetNetworkConfig();
+        return GetNetworkConfig();
     if(step_name == "perf_db_test")
         return TestPerfDbValid();
     if(step_name == "chk_pre_compiled_kernels")
