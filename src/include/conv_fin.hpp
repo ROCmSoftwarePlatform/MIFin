@@ -749,7 +749,17 @@ int ConvFin<Tgpu, Tref>::GetNetworkConfig()
                   outputTensor.desc, weightTensor.desc, inputTensor.desc, convDesc, conv_dir);
 
     const auto network_config = problem.MakeNetworkConfig().ToString();
+
+    std::ostringstream ss;
+    miopen::conv::ProblemDescription::VisitAll(problem, [&](auto&& value, auto&&) {
+        if(ss.tellp() != 0)
+            ss << "x";
+        ss << value;
+    });
+    auto db_key = ss.str();
+
     output["network_config"] = network_config;
+    output["db_key"] = db_key;
     return 0;
 }
 
