@@ -153,7 +153,15 @@ int main(int argc, char* argv[], char* envp[])
             }
             else if(command["config"]["cmd"] == "bnormfp16")
             {
-                f = std::make_unique<fin::BNFin<float16, float>>(command);
+                f = std::make_unique<fin::BNFin<float16, double>>(command);
+            }
+            else if(command["config"]["cmd"] == "bnormfp16fp32")
+            {
+                f = std::make_unique<fin::BNFin<float16, double, float16>>(command);
+            }
+            else if(command["config"]["cmd"] == "bnormbfp16fp32")
+            {
+                f = std::make_unique<fin::BNFin<bfloat16, double, float>>(command);
             }
             else
             {
