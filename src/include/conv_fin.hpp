@@ -132,6 +132,7 @@ class ConvFin : public BaseFin
     int CopyFromDevice();
     int RunGPU();
     int TestApplicability();
+    int GetNetworkConfig();
 
     int TestPerfDbEntries(
         const std::string config_id,
@@ -736,6 +737,33 @@ int ConvFin<Tgpu, Tref>::TestApplicability()
 }
 
 template <typename Tgpu, typename Tref>
+int ConvFin<Tgpu, Tref>::GetNetworkConfig()
+{
+    GetandSetData();
+    const auto conv_dir = GetDirection();
+    const auto problem =
+        (conv_dir == miopen::conv::Direction::Forward)
+            ? miopen::conv::ProblemDescription(
+                  inputTensor.desc, weightTensor.desc, outputTensor.desc, convDesc, conv_dir)
+            : miopen::conv::ProblemDescription(
+                  outputTensor.desc, weightTensor.desc, inputTensor.desc, convDesc, conv_dir);
+
+    const auto network_config = problem.MakeNetworkConfig().ToString();
+
+    std::ostringstream ss;
+    miopen::conv::ProblemDescription::VisitAll(problem, [&](auto&& value, auto&&) {
+        if(ss.tellp() != 0)
+            ss << "x";
+        ss << value;
+    });
+    auto db_key = ss.str();
+
+    output["network_config"] = network_config;
+    output["db_key"]         = db_key;
+    return 0;
+}
+
+template <typename Tgpu, typename Tref>
 int ConvFin<Tgpu, Tref>::TestPerfDbEntries(
     const std::string config_id,
     const miopen::ConvolutionContext& ctx,
@@ -1210,6 +1238,8 @@ int ConvFin<Tgpu, Tref>::ProcessStep(const std::string& step_name)
         return CopyFromDevice();
     if(step_name == "applicability")
         return TestApplicability();
+    if(step_name == "network_config")
+        return GetNetworkConfig();
     if(step_name == "perf_db_test")
         return TestPerfDbValid();
     if(step_name == "chk_pre_compiled_kernels")
