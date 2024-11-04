@@ -127,6 +127,10 @@ class BaseFin
             solver["tunable"] = "0";
             solver["dynamic"] = "0";
             solver["type"]    = "batch_norm";
+            if(id.GetSolver().IsTunable())
+                solver["tunable"] = "1";
+            if(id.GetSolver().IsDynamic())
+                solver["dynamic"] = "1";
             solvers.push_back(solver);
         }
 
