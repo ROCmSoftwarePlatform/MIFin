@@ -303,30 +303,6 @@ int BNFin<Tgpu, Tref, Tmix>::GetandSetData()
         exit(EXIT_FAILURE);
     }
 
-    // sanity check for memory layout
-    if(command["in_layout"] == "NCHW")
-    {
-        bn_layout = miopenTensorLayout_t::miopenTensorNCHW;
-    }
-    else if(command["in_layout"] == "NHWC")
-    {
-        bn_layout = miopenTensorLayout_t::miopenTensorNHWC;
-    }
-    else if(command["in_layout"] == "NCDHW")
-    {
-        bn_layout = miopenTensorLayout_t::miopenTensorNCDHW;
-    }
-    else if(command["in_layout"] == "NDHWC")
-    {
-        bn_layout = miopenTensorLayout_t::miopenTensorNDHWC;
-    }
-    else
-    {
-        throw std::runtime_error(
-            "Provided memory layout is : " + std::string(command["in_layout"]) +
-            ". Batch norm only support default NCHW, NHWC, NCDHW, NDHWC");
-    }
-
     return (0);
 }
 
@@ -396,6 +372,30 @@ int BNFin<Tgpu, Tref, Tmix>::SetBNDescriptor()
 
     // keep running mean and variance
     keepRunningMeanVar = command["run"] == 0 ? false : true;
+
+    // set & sanity check for memory layout
+    if(command["in_layout"] == "NCHW")
+    {
+        bn_layout = miopenTensorLayout_t::miopenTensorNCHW;
+    }
+    else if(command["in_layout"] == "NHWC")
+    {
+        bn_layout = miopenTensorLayout_t::miopenTensorNHWC;
+    }
+    else if(command["in_layout"] == "NCDHW")
+    {
+        bn_layout = miopenTensorLayout_t::miopenTensorNCDHW;
+    }
+    else if(command["in_layout"] == "NDHWC")
+    {
+        bn_layout = miopenTensorLayout_t::miopenTensorNDHWC;
+    }
+    else
+    {
+        throw std::runtime_error(
+            "Provided memory layout is : " + std::string(command["in_layout"]) +
+            ". Batch norm only support default NCHW, NHWC, NCDHW, NDHWC");
+    }
 
     return miopenStatusSuccess;
 }
