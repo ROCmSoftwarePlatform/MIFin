@@ -1258,7 +1258,7 @@ int ConvFin<Tgpu, Tref>::GetandSetData()
 
     const std::string in_layout = inputTensor.desc.GetLayout(inputTensor.desc.GetLayout_str());
     std::cout << "inputTensor layout: " << in_layout
-              << ", possible: " << inputTensor.desc.IsPossibleLayout("NCHW", in_layout)
+              << ", possible: " << inputTensor.desc.IsPossibleLayout(in_layout, in_layout)
               << std::endl;
 
     if(IsInputTensorTransform())
