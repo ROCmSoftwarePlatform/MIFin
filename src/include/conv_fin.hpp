@@ -395,7 +395,7 @@ float ConvFin<Tgpu, Tref>::PerfTune(const miopen::Handle& h,
 
         const auto invoker =
             h.PrepareInvoker(*solution.invoker_factory, solution.construction_params);
-        kernel_time = BenchmarkInvoker(invoker, h, invoke_ctx);
+        kernel_time                = BenchmarkInvoker(invoker, h, invoke_ctx);
         res_item["kernel_objects"] = BuildJsonKernelList(h, solution.construction_params);
     }
     else if(conv_dir == miopen::conv::Direction::BackwardData)
@@ -417,7 +417,7 @@ float ConvFin<Tgpu, Tref>::PerfTune(const miopen::Handle& h,
 
         const auto invoker =
             h.PrepareInvoker(*solution.invoker_factory, solution.construction_params);
-        kernel_time = BenchmarkInvoker(invoker, h, invoke_ctx);
+        kernel_time                = BenchmarkInvoker(invoker, h, invoke_ctx);
         res_item["kernel_objects"] = BuildJsonKernelList(h, solution.construction_params);
     }
     else if(conv_dir == miopen::conv::Direction::BackwardWeights)
@@ -439,7 +439,7 @@ float ConvFin<Tgpu, Tref>::PerfTune(const miopen::Handle& h,
 
         const auto invoker =
             h.PrepareInvoker(*solution.invoker_factory, solution.construction_params);
-        kernel_time = BenchmarkInvoker(invoker, h, invoke_ctx);
+        kernel_time                = BenchmarkInvoker(invoker, h, invoke_ctx);
         res_item["kernel_objects"] = BuildJsonKernelList(h, solution.construction_params);
     }
     else
@@ -629,8 +629,7 @@ int ConvFin<Tgpu, Tref>::MIOpenEval(TuningOp tuning_op)
             std::cerr << "Checking workspace size " << workspace_sz << std::endl;
             if(workspace_sz > workspace.desc.GetNumBytes())
             {
-                std::cerr << "Allocating " << workspace_sz << " bytes for workspace"
-                          << std::endl;
+                std::cerr << "Allocating " << workspace_sz << " bytes for workspace" << std::endl;
                 workspace = tensor<Tgpu, Tref>{
                     q,
                     std::vector<size_t>{static_cast<size_t>(workspace_sz / sizeof(Tgpu))},
@@ -656,7 +655,8 @@ int ConvFin<Tgpu, Tref>::MIOpenEval(TuningOp tuning_op)
                 }
                 else if(tuning_op == TuningOp::Find)
                 {
-                    auto solution = s.FindSolution(ctx, problem, db, {}); // auto tune is not expected here
+                    auto solution =
+                        s.FindSolution(ctx, problem, db, {}); // auto tune is not expected here
                     SolutionHasProgram(h, solution);
                     try
                     {
@@ -669,18 +669,19 @@ int ConvFin<Tgpu, Tref>::MIOpenEval(TuningOp tuning_op)
                         return false;
                     }
 
-                    res_item["kernel_objects"] = BuildJsonKernelList(h, solution.construction_params);
+                    res_item["kernel_objects"] =
+                        BuildJsonKernelList(h, solution.construction_params);
                 }
 
-                res_item["tunable"]        = s.IsTunable();
-                res_item["params"]         = s.GetPerfCfgParams(ctx, problem, db);
-                res_item["workspace"]      = workspace_sz;
-                res_item["time"]           = kernel_time;
-                res_item["layout"]         = problem.GetInLayout();
-                res_item["data_type"]      = problem.GetInDataType();
-                res_item["direction"]      = conv_dir;
-                res_item["bias"]           = problem.GetBias();
-                res_item["reason"]         = "Success";
+                res_item["tunable"]   = s.IsTunable();
+                res_item["params"]    = s.GetPerfCfgParams(ctx, problem, db);
+                res_item["workspace"] = workspace_sz;
+                res_item["time"]      = kernel_time;
+                res_item["layout"]    = problem.GetInLayout();
+                res_item["data_type"] = problem.GetInDataType();
+                res_item["direction"] = conv_dir;
+                res_item["bias"]      = problem.GetBias();
+                res_item["reason"]    = "Success";
                 if(kernel_time == 0.0)
                     res_item["reason"] = "Invoker returned time = 0";
                 if(kernel_time < 0)
