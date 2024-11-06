@@ -65,7 +65,7 @@ using json = nlohmann::json;
 
 namespace fin {
 
-const int INVOKE_LIMIT = 4;
+const int INVOKE_LIMIT = 6;
 
 class BaseFin
 {
