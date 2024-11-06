@@ -64,7 +64,7 @@ class BNFin : public BaseFin
     BNFin(json _job) : BaseFin(), job(_job)
     {
         if(job.contains("config"))
-            PrepBatchNorm();
+          PrepBatchNorm();
     }
 
     void PrepBatchNorm()
@@ -374,26 +374,26 @@ int BNFin<Tgpu, Tref, Tmix>::SetBNDescriptor()
     keepRunningMeanVar = command["run"] == 0 ? false : true;
 
     // set & sanity check for memory layout
-    if(command["in_layout"] == "NCHW")
+    if(command["layout"] == "NCHW")
     {
         bn_layout = miopenTensorLayout_t::miopenTensorNCHW;
     }
-    else if(command["in_layout"] == "NHWC")
+    else if(command["layout"] == "NHWC")
     {
         bn_layout = miopenTensorLayout_t::miopenTensorNHWC;
     }
-    else if(command["in_layout"] == "NCDHW")
+    else if(command["layout"] == "NCDHW")
     {
         bn_layout = miopenTensorLayout_t::miopenTensorNCDHW;
     }
-    else if(command["in_layout"] == "NDHWC")
+    else if(command["layout"] == "NDHWC")
     {
         bn_layout = miopenTensorLayout_t::miopenTensorNDHWC;
     }
     else
     {
         throw std::runtime_error(
-            "Provided memory layout is : " + std::string(command["in_layout"]) +
+            "Provided memory layout is : " + std::string(command["layout"]) +
             ". Batch norm only support default NCHW, NHWC, NCDHW, NDHWC");
     }
 
