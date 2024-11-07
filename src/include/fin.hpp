@@ -65,7 +65,8 @@ using json = nlohmann::json;
 
 namespace fin {
 
-const int INVOKE_LIMIT = 6;
+const int INVOKE_LIMIT   = 8;
+const int INVOKE_DISCARD = 5;
 
 class BaseFin
 {
@@ -299,8 +300,6 @@ class BaseFin
     {
         float kernel_time;
         std::vector<float> ktimes;
-        // warmup run
-        invoker(h, invoke_ctx);
         for(auto idx = 0; idx < INVOKE_LIMIT; idx++)
         {
             invoker(h, invoke_ctx);
@@ -308,9 +307,16 @@ class BaseFin
             ktimes.push_back(kernel_time);
             std::cerr << "kernel_time : " << kernel_time << std::endl;
         }
+        //discard slow times
         sort(ktimes.begin(), ktimes.end());
-        kernel_time = ktimes[(ktimes.size() - 1) / 2];
-        std::cerr << "kernel_time median : " << kernel_time << std::endl;
+        kernel_time = 0;
+        for(auto idx = 0; idx < INVOKE_LIMIT - INVOKE_DISCARD; idx++)
+        {
+            kernel_time += ktimes[idx];
+        }
+        kernel_time /= (INVOKE_LIMIT - INVOKE_DISCARD);
+
+        std::cerr << "kernel_time average : " << kernel_time << std::endl;
         return kernel_time;
     }
 
@@ -320,8 +326,6 @@ class BaseFin
     {
         float kernel_time;
         std::vector<float> ktimes;
-        // warmup run
-        invoker(h, invoke_ctx);
         for(auto idx = 0; idx < INVOKE_LIMIT; idx++)
         {
             invoker(h, invoke_ctx);
@@ -329,9 +333,16 @@ class BaseFin
             ktimes.push_back(kernel_time);
             std::cerr << "kernel_time : " << kernel_time << std::endl;
         }
+        //discard slow times
         sort(ktimes.begin(), ktimes.end());
-        kernel_time = ktimes[(ktimes.size() - 1) / 2];
-        std::cerr << "kernel_time median : " << kernel_time << std::endl;
+        kernel_time = 0;
+        for(auto idx = 0; idx < INVOKE_LIMIT - INVOKE_DISCARD; idx++)
+        {
+            kernel_time += ktimes[idx];
+        }
+        kernel_time /= (INVOKE_LIMIT - INVOKE_DISCARD);
+
+        std::cerr << "kernel_time average : " << kernel_time << std::endl;
         return kernel_time;
     }
 
