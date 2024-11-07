@@ -48,6 +48,7 @@
 #include <miopen/conv/data_invoke_params.hpp>
 #include <miopen/conv/wrw_invoke_params.hpp>
 #include <miopen/load_file.hpp>
+#include <miopen/fin/fin_interface.hpp>
 #include <numeric>
 #include <vector>
 
@@ -102,37 +103,41 @@ class BaseFin
     int GetSolverList()
     {
         std::vector<std::unordered_map<std::string, std::string>> solvers;
-        for(const auto& id :
-            miopen::solver::GetSolversByPrimitive(miopen::solver::Primitive::Convolution))
+        for(const auto& slv : miopen::fin_interface::GetAllConvSolvers())
         {
             std::unordered_map<std::string, std::string> solver;
-            solver["id"]      = std::to_string(id.Value());
-            solver["name"]    = id.ToString();
+            solver["id"]   = std::to_string(slv.GetId());
+            solver["name"] = slv.GetName();
+            std::cout << slv.GetName() << std::endl;
+            std::cout << slv.GetId() << std::endl;
             solver["tunable"] = "0";
             solver["dynamic"] = "0";
             solver["type"]    = "convolution";
-            if(id.GetSolver().IsTunable())
+            if(slv.IsTunable())
                 solver["tunable"] = "1";
-            if(id.GetSolver().IsDynamic())
+            if(slv.IsDynamic())
+                solver["dynamic"] = "1";
+            solvers.push_back(solver);
+        }
+        std::cout << "Got all Conv solvers" << std::endl;
+
+        for(const auto& slv : miopen::fin_interface::GetAllBatchNormSolvers())
+        {
+            std::unordered_map<std::string, std::string> solver;
+            solver["id"]   = std::to_string(slv.GetId());
+            solver["name"] = slv.GetName();
+            std::cout << slv.GetName() << std::endl;
+            solver["tunable"] = "0";
+            solver["dynamic"] = "0";
+            solver["type"]    = "batch_norm";
+            if(slv.IsTunable())
+                solver["tunable"] = "1";
+            if(slv.IsDynamic())
                 solver["dynamic"] = "1";
             solvers.push_back(solver);
         }
 
-        for(const auto& id :
-            miopen::solver::GetSolversByPrimitive(miopen::solver::Primitive::Batchnorm))
-        {
-            std::unordered_map<std::string, std::string> solver;
-            solver["id"]      = std::to_string(id.Value());
-            solver["name"]    = id.ToString();
-            solver["tunable"] = "0";
-            solver["dynamic"] = "0";
-            solver["type"]    = "batch_norm";
-            if(id.GetSolver().IsTunable())
-                solver["tunable"] = "1";
-            if(id.GetSolver().IsDynamic())
-                solver["dynamic"] = "1";
-            solvers.push_back(solver);
-        }
+        std::cout << "Got all BN solvers" << std::endl;
 
         output["all_solvers"] = solvers;
         return 0;
