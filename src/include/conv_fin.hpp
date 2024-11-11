@@ -126,6 +126,7 @@ class ConvFin : public BaseFin
     int CopyFromDevice();
     int RunGPU();
     int TestApplicability();
+    int GetNetworkConfig();
 
     int TestPerfDbEntries(
         const std::string config_id,
@@ -146,7 +147,8 @@ class ConvFin : public BaseFin
                    const miopen::conv::ProblemDescription& problem,
                    const miopen::solver::Id& solver_id,
                    miopen::PerformanceDb& db,
-                   miopen::ConvolutionContext& perf_ctx);
+                   miopen::ConvolutionContext& perf_ctx,
+                   json& res_item);
 
     float FindTune(const miopen::Handle& h, const miopen::solver::ConvSolution& solution);
     int MIOpenEval(TuningOp tuning_op);
@@ -355,7 +357,8 @@ float ConvFin<Tgpu, Tref>::PerfTune(const miopen::Handle& h,
                                     const miopen::conv::ProblemDescription& problem,
                                     const miopen::solver::Id& solver_id,
                                     miopen::PerformanceDb& db,
-                                    miopen::ConvolutionContext& perf_ctx)
+                                    miopen::ConvolutionContext& perf_ctx,
+                                    json& res_item)
 {
     const auto& s       = solver_id.GetSolver();
     const auto conv_dir = GetDirection();
@@ -386,7 +389,8 @@ float ConvFin<Tgpu, Tref>::PerfTune(const miopen::Handle& h,
 
         const auto invoker =
             h.PrepareInvoker(*solution.invoker_factory, solution.construction_params);
-        kernel_time = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
+        kernel_time                = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
+        res_item["kernel_objects"] = BuildJsonKernelList(h, solution.construction_params);
     }
     else if(conv_dir == miopen::conv::Direction::BackwardData)
     {
@@ -407,7 +411,8 @@ float ConvFin<Tgpu, Tref>::PerfTune(const miopen::Handle& h,
 
         const auto invoker =
             h.PrepareInvoker(*solution.invoker_factory, solution.construction_params);
-        kernel_time = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
+        kernel_time                = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
+        res_item["kernel_objects"] = BuildJsonKernelList(h, solution.construction_params);
     }
     else if(conv_dir == miopen::conv::Direction::BackwardWeights)
     {
@@ -428,7 +433,8 @@ float ConvFin<Tgpu, Tref>::PerfTune(const miopen::Handle& h,
 
         const auto invoker =
             h.PrepareInvoker(*solution.invoker_factory, solution.construction_params);
-        kernel_time = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
+        kernel_time                = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
+        res_item["kernel_objects"] = BuildJsonKernelList(h, solution.construction_params);
     }
     else
     {
@@ -612,47 +618,64 @@ int ConvFin<Tgpu, Tref>::MIOpenEval(TuningOp tuning_op)
             if(!LoadJsonKernelList(h, eval_slv["kernel_objects"], res_item))
                 return false;
 
-            auto solution = s.FindSolution(ctx, problem, db, {}); // auto tune is not expected here
-            SolutionHasProgram(h, solution);
+            auto workspace_sz = s.GetWorkspaceSize(ctx, problem);
 
-            std::cerr << "Checking workspace size" << std::endl;
-            if(solution.workspace_sz > workspace.desc.GetNumBytes())
+            std::cerr << "Checking workspace size " << workspace_sz << std::endl;
+            if(workspace_sz > workspace.desc.GetNumBytes())
             {
-                std::cerr << "Allocating " << solution.workspace_sz << " bytes for workspace"
-                          << std::endl;
+                std::cerr << "Allocating " << workspace_sz << " bytes for workspace" << std::endl;
                 workspace = tensor<Tgpu>{
                     q,
-                    std::vector<size_t>{static_cast<size_t>(solution.workspace_sz / sizeof(Tgpu))},
+                    std::vector<size_t>{static_cast<size_t>(workspace_sz / sizeof(Tgpu))},
                     false,
                     false};
                 workspace.AllocateBuffers();
-            }
-            if(!solution.invoker_factory)
-            {
-                std::cerr << "Invoker not implemeted" << std::endl;
-                res_item["reason"] = "Invoker not implemented";
-                return false;
             }
             try
             {
                 float kernel_time = -1;
                 if(tuning_op == TuningOp::Perf)
-                    kernel_time = PerfTune(h, problem, solver_id, db, ctx);
+                {
+                    try
+                    {
+                        kernel_time = PerfTune(h, problem, solver_id, db, ctx, res_item);
+                    }
+                    catch(const std::exception& e)
+                    {
+                        res_item["reason"] = std::string("PerfTune failed: ") + e.what();
+                        std::cerr << res_item["reason"] << std::endl;
+                        return false;
+                    }
+                }
                 else if(tuning_op == TuningOp::Find)
-                    kernel_time = FindTune(h, solution);
+                {
+                    auto solution =
+                        s.FindSolution(ctx, problem, db, {}); // auto tune is not expected here
+                    SolutionHasProgram(h, solution);
+                    try
+                    {
+                        kernel_time = FindTune(h, solution);
+                    }
+                    catch(const std::exception& e)
+                    {
+                        res_item["reason"] = std::string("FindTune failed: ") + e.what();
+                        std::cerr << res_item["reason"] << std::endl;
+                        return false;
+                    }
 
-                json kern_objs = BuildJsonKernelList(h, solution.construction_params);
+                    res_item["kernel_objects"] =
+                        BuildJsonKernelList(h, solution.construction_params);
+                }
 
-                res_item["tunable"]        = s.IsTunable();
-                res_item["params"]         = s.GetPerfCfgParams(ctx, problem, db);
-                res_item["workspace"]      = solution.workspace_sz;
-                res_item["time"]           = kernel_time;
-                res_item["layout"]         = problem.GetInLayout();
-                res_item["data_type"]      = problem.GetInDataType();
-                res_item["direction"]      = conv_dir;
-                res_item["bias"]           = problem.GetBias();
-                res_item["kernel_objects"] = kern_objs;
-                res_item["reason"]         = "Success";
+                res_item["tunable"]   = s.IsTunable();
+                res_item["params"]    = s.GetPerfCfgParams(ctx, problem, db);
+                res_item["workspace"] = workspace_sz;
+                res_item["time"]      = kernel_time;
+                res_item["layout"]    = problem.GetInLayout();
+                res_item["data_type"] = problem.GetInDataType();
+                res_item["direction"] = conv_dir;
+                res_item["bias"]      = problem.GetBias();
+                res_item["reason"]    = "Success";
                 if(kernel_time == 0.0)
                     res_item["reason"] = "Invoker returned time = 0";
                 if(kernel_time < 0)
@@ -726,6 +749,33 @@ int ConvFin<Tgpu, Tref>::TestApplicability()
         }
     }
     output["applicable_solvers"] = app_solvers;
+    return 0;
+}
+
+template <typename Tgpu, typename Tref>
+int ConvFin<Tgpu, Tref>::GetNetworkConfig()
+{
+    GetandSetData();
+    const auto conv_dir = GetDirection();
+    const auto problem =
+        (conv_dir == miopen::conv::Direction::Forward)
+            ? miopen::conv::ProblemDescription(
+                  inputTensor.desc, weightTensor.desc, outputTensor.desc, convDesc, conv_dir)
+            : miopen::conv::ProblemDescription(
+                  outputTensor.desc, weightTensor.desc, inputTensor.desc, convDesc, conv_dir);
+
+    const auto network_config = problem.MakeNetworkConfig().ToString();
+
+    std::ostringstream ss;
+    miopen::conv::ProblemDescription::VisitAll(problem, [&](auto&& value, auto&&) {
+        if(ss.tellp() != 0)
+            ss << "x";
+        ss << value;
+    });
+    auto db_key = ss.str();
+
+    output["network_config"] = network_config;
+    output["db_key"]         = db_key;
     return 0;
 }
 
@@ -1204,6 +1254,8 @@ int ConvFin<Tgpu, Tref>::ProcessStep(const std::string& step_name)
         return CopyFromDevice();
     if(step_name == "applicability")
         return TestApplicability();
+    if(step_name == "network_config")
+        return GetNetworkConfig();
     if(step_name == "perf_db_test")
         return TestPerfDbValid();
     if(step_name == "chk_pre_compiled_kernels")
@@ -1252,7 +1304,7 @@ int ConvFin<Tgpu, Tref>::GetandSetData()
 
     const std::string in_layout = inputTensor.desc.GetLayout(inputTensor.desc.GetLayout_str());
     std::cout << "inputTensor layout: " << in_layout
-              << ", possible: " << inputTensor.desc.IsPossibleLayout("NCHW", in_layout)
+              << ", possible: " << inputTensor.desc.IsPossibleLayout(in_layout, in_layout)
               << std::endl;
 
     if(IsInputTensorTransform())

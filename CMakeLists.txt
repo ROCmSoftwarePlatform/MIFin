@@ -162,7 +162,8 @@ set(BOOST_COMPONENTS filesystem system)
 add_definitions(-DBOOST_ALL_NO_LIB=1)
 find_package(Boost REQUIRED COMPONENTS ${BOOST_COMPONENTS})
 
-find_path(HALF_INCLUDE_DIR half.hpp HINTS ${CMAKE_INSTALL_PREFIX}/include ${CMAKE_INSTALL_PREFIX}/include/half )
+find_path(HALF_INCLUDE_DIR half.hpp HINTS ${CMAKE_INSTALL_PREFIX}
+    PATH_SUFFIXES include include/half)
 message(STATUS "HALF_INCLUDE_DIR: ${HALF_INCLUDE_DIR}")
 include_directories(${HALF_INCLUDE_DIR})
 
