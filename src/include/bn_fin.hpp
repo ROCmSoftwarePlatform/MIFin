@@ -64,7 +64,7 @@ class BNFin : public BaseFin
     BNFin(json _job) : BaseFin(), job(_job)
     {
         if(job.contains("config"))
-          PrepBatchNorm();
+            PrepBatchNorm();
     }
 
     void PrepBatchNorm()
@@ -229,7 +229,6 @@ int BNFin<Tgpu, Tref, Tmix>::GetandSetData()
     auto gen_value = [](auto...) { return prng::gen_descreet_uniform_sign<Tgpu>(1e-2, 100); };
 
     in.AllocOnHost(Tensor<Tgpu>{bn_layout, in_len});
-    in.InitHostData(in.GetTensor().desc.GetElementSize(), true, gen_value);
 
     auto derivedBnDesc = miopen::TensorDescriptor{};
     miopen::DeriveBNTensorDescriptor(derivedBnDesc, in.GetTensor().desc, bn_mode);
@@ -240,12 +239,19 @@ int BNFin<Tgpu, Tref, Tmix>::GetandSetData()
         scale.AllocOnHost(Tensor<Tgpu>{bn_layout, derivedBnDesc.GetLengths()});
         bias.AllocOnHost(Tensor<Tgpu>{bn_layout, derivedBnDesc.GetLengths()});
 
+        /*
         auto gen_value_scale_bias = [](auto...) {
             return prng::gen_descreet_uniform_sign<Tgpu>(1e-2, 100);
         };
 
         scale.InitHostData(scale.GetTensor().desc.GetElementSize(), true, gen_value_scale_bias);
         bias.InitHostData(bias.GetTensor().desc.GetElementSize(), true, gen_value_scale_bias);
+        */
+        for(int i = 0; i < scale.GetVector().size(); i++)
+        {
+            scale.GetVector()[i] = prng::gen_canonical<Tgpu>();
+            bias.GetVector()[i]  = prng::gen_canonical<Tgpu>();
+        }
     }
     if(isFwdInfer)
     {
@@ -264,11 +270,19 @@ int BNFin<Tgpu, Tref, Tmix>::GetandSetData()
         runMean.AllocOnHost(Tensor<Tmix>{bn_layout, derivedBnDesc.GetLengths()});
         runVariance.AllocOnHost(Tensor<Tmix>{bn_layout, derivedBnDesc.GetLengths()});
 
+        /*
         auto gen_var = [](auto...) {
             return static_cast<Tmix>(1e-2 * (prng::gen_0_to_B(100) + 1));
         };
         runMean.InitHostData(runMean.GetTensor().desc.GetElementSize(), true, gen_var);
         runVariance.InitHostData(runVariance.GetTensor().desc.GetElementSize(), true, gen_var);
+        */
+
+        for(int i = 0; i < runVariance.GetVector().size(); i++)
+        {
+            runMean.GetVector()[i]     = prng::gen_canonical<Tmix>();
+            runVariance.GetVector()[i] = prng::gen_canonical<Tmix>();
+        }
     }
     else if(isBwd)
     {
@@ -288,13 +302,13 @@ int BNFin<Tgpu, Tref, Tmix>::GetandSetData()
         savedMean.AllocOnHost(Tensor<Tmix>{bn_layout, derivedBnDesc.GetLengths()});
         savedInvVar.AllocOnHost(Tensor<Tmix>{bn_layout, derivedBnDesc.GetLengths()});
 
+        auto gen_value = [](auto...) { return prng::gen_descreet_unsigned<Tgpu>(1e-2, 100); };
         bnScale.InitHostData(bnScale.GetTensor().desc.GetElementSize(), true, gen_value);
-
-        savedMean.InitHostData(savedMean.GetTensor().desc.GetElementSize(), true, gen_var_bwd);
 
         auto gen_in_var = [](auto...) {
             return static_cast<Tmix>(1e-2 * (prng::gen_0_to_B(100) + 1));
         };
+        savedMean.InitHostData(savedMean.GetTensor().desc.GetElementSize(), true, gen_in_var);
         savedInvVar.InitHostData(savedInvVar.GetTensor().desc.GetElementSize(), true, gen_in_var);
     }
     else
@@ -392,9 +406,8 @@ int BNFin<Tgpu, Tref, Tmix>::SetBNDescriptor()
     }
     else
     {
-        throw std::runtime_error(
-            "Provided memory layout is : " + std::string(command["layout"]) +
-            ". Batch norm only support default NCHW, NHWC, NCDHW, NDHWC");
+        throw std::runtime_error("Provided memory layout is : " + std::string(command["layout"]) +
+                                 ". Batch norm only support default NCHW, NHWC, NCDHW, NDHWC");
     }
 
     return miopenStatusSuccess;
@@ -572,8 +585,16 @@ int BNFin<Tgpu, Tref, Tmix>::MIOpenCompile(TuningOp tuning_op)
                (!job.contains("solvers")))
             {
                 res_item["solver_name"] = sln.solver_id;
-                const auto solver       = miopen::fin_interface::GetBatchNormSolver(sln.solver_id);
-                res_item["algorithm"]   = GetAlgorithm();
+                std::cout << sln.solver_id << std::endl;
+                const auto solver = miopen::fin_interface::GetBatchNormSolver(sln.solver_id);
+                if(!solver.IsValid())
+                {
+                    res_item["reason"] = "Solver not valid";
+                    std::cerr << "Skipping invalid solver: " << sln.solver_id << std::endl;
+                    return false;
+                }
+
+                res_item["algorithm"] = GetAlgorithm();
 
                 if(tuning_op == TuningOp::Perf)
                 {

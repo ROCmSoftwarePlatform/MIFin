@@ -108,15 +108,17 @@ class BaseFin
             std::unordered_map<std::string, std::string> solver;
             solver["id"]   = std::to_string(slv.GetId());
             solver["name"] = slv.GetName();
-            std::cout << slv.GetName() << std::endl;
-            std::cout << slv.GetId() << std::endl;
+            std::cout << slv.GetName() << " " << slv.GetId() << " " << slv.IsValid() << std::endl;
             solver["tunable"] = "0";
             solver["dynamic"] = "0";
             solver["type"]    = "convolution";
+            solver["valid"]   = "0";
             if(slv.IsTunable())
                 solver["tunable"] = "1";
             if(slv.IsDynamic())
                 solver["dynamic"] = "1";
+            if(slv.IsValid())
+                solver["valid"] = "1";
             solvers.push_back(solver);
         }
         std::cout << "Got all Conv solvers" << std::endl;
@@ -126,14 +128,20 @@ class BaseFin
             std::unordered_map<std::string, std::string> solver;
             solver["id"]   = std::to_string(slv.GetId());
             solver["name"] = slv.GetName();
-            std::cout << slv.GetName() << std::endl;
+            std::cout << slv.GetName() << " " << slv.GetId() << " " << slv.IsValid() << std::endl;
             solver["tunable"] = "0";
             solver["dynamic"] = "0";
             solver["type"]    = "batch_norm";
+            solver["valid"]   = "0";
             if(slv.IsTunable())
                 solver["tunable"] = "1";
             if(slv.IsDynamic())
                 solver["dynamic"] = "1";
+            const auto bn_solver = miopen::fin_interface::GetBatchNormSolver(slv.GetName());
+            std::cout << slv.GetName() << " " << slv.GetId() << " " << bn_solver.IsValid()
+                      << std::endl;
+            if(bn_solver.IsValid())
+                solver["valid"] = "1";
             solvers.push_back(solver);
         }
 
