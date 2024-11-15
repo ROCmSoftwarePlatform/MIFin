@@ -56,7 +56,11 @@
 namespace fs = miopen::fs;
 namespace fin {
 
-template <typename Tgpu, typename Tref, typename Tmix = Tgpu>
+template <typename TInput,
+          typename Tref,
+          typename TAcc       = TInput,
+          typename TScaleBias = TInput,
+          typename TOut       = TInput>
 class BNFin : public BaseFin
 {
     public:
@@ -124,62 +128,63 @@ class BNFin : public BaseFin
     bool isFwdInfer         = false;
     bool isBwd              = false;
 
-    tensor<Tgpu> workspace;
-    GpumemTensor<Tgpu> in;
-    GpumemTensor<Tgpu> out;
+    tensor<TInput> workspace;
+    GpumemTensor<TInput> in;
+    GpumemTensor<TInput> out;
     GpumemTensor<Tref> out_ref;
 
     // forward
-    GpumemTensor<Tgpu> scale;
-    GpumemTensor<Tgpu> bias;
+    GpumemTensor<TScaleBias> scale;
+    GpumemTensor<TScaleBias> bias;
 
     // forward inference
-    GpumemTensor<Tmix> estMean;
-    GpumemTensor<Tmix> estVariance;
+    GpumemTensor<TAcc> estMean;
+    GpumemTensor<TAcc> estVariance;
 
-    GpumemTensor<Tmix> savedMean;
+    GpumemTensor<TAcc> savedMean;
     Tensor<Tref> savedMean_ref;
 
     // forward training
-    GpumemTensor<Tmix> savedVariance;
-    GpumemTensor<Tmix> runMean;
-    GpumemTensor<Tmix> runVariance;
+    GpumemTensor<TAcc> savedVariance;
+    GpumemTensor<TAcc> runMean;
+    GpumemTensor<TAcc> runVariance;
     // ref
     Tensor<Tref> savedVariance_ref;
     Tensor<Tref> runMean_ref;
     Tensor<Tref> runVariance_ref;
 
     // backward needed different type for bwd.
-    GpumemTensor<Tmix> out_bwd;
+    GpumemTensor<TOut> out_bwd;
 
-    GpumemTensor<Tgpu> bnScale;
-    GpumemTensor<Tmix> dScale;
-    GpumemTensor<Tmix> dBias;
-    // savedMean declared above as Tmix as well
-    GpumemTensor<Tmix> savedInvVar;
-    GpumemTensor<Tmix> dy;
+    GpumemTensor<TScaleBias> bnScale;
+    GpumemTensor<TAcc> dScale;
+    GpumemTensor<TAcc> dBias;
+
+    GpumemTensor<TAcc> savedInvVar;
+    GpumemTensor<TOut> dy;
 
     Tensor<Tref> dBias_ref;
     Tensor<Tref> dScale_ref;
 
     // for backward
-    // Tensor<Tgpu, Tcpu> dyInputTensor;
-    // Tensor<Tgpu, Tcpu> dxOutputTensor;
+    // Tensor<TInput, Tcpu> dyInputTensor;
+    // Tensor<TInput, Tcpu> dxOutputTensor;
 
     // Tref maxval;
     miopenTensorLayout_t bn_layout;
 };
 
-template <typename Tgpu, typename Tref, typename Tmix>
-miopen::debug::BatchNormDirection_t BNFin<Tgpu, Tref, Tmix>::GetDirection() const
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+miopen::debug::BatchNormDirection_t
+BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetDirection() const
 {
     return isFwdTrain ? miopen::debug::BatchNormDirection_t::ForwardTraining
                       : (isFwdInfer ? miopen::debug::BatchNormDirection_t::ForwardInference
                                     : miopen::debug::BatchNormDirection_t::Backward);
 }
 
-template <typename Tgpu, typename Tref, typename Tmix>
-int BNFin<Tgpu, Tref, Tmix>::TestApplicability()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+int BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::TestApplicability()
 {
 #if MIOPEN_MODE_NOGPU
     GetandSetData();
@@ -220,93 +225,76 @@ int BNFin<Tgpu, Tref, Tmix>::TestApplicability()
     return 0;
 }
 
-template <typename Tgpu, typename Tref, typename Tmix>
-int BNFin<Tgpu, Tref, Tmix>::GetandSetData()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+int BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetandSetData()
 {
 
     SetBNDescriptor();
-    auto in_len    = GetInputTensorLengths();
-    auto gen_value = [](auto...) { return prng::gen_descreet_uniform_sign<Tgpu>(1e-2, 100); };
+    auto in_len = GetInputTensorLengths();
 
-    in.AllocOnHost(Tensor<Tgpu>{bn_layout, in_len});
+    in.AllocOnHost(Tensor<TInput>{bn_layout, in_len});
 
     auto derivedBnDesc = miopen::TensorDescriptor{};
     miopen::DeriveBNTensorDescriptor(derivedBnDesc, in.GetTensor().desc, bn_mode);
 
     if(isFwdInfer || isFwdTrain)
     {
-        out.AllocOnHost(Tensor<Tgpu>{bn_layout, in_len});
-        scale.AllocOnHost(Tensor<Tgpu>{bn_layout, derivedBnDesc.GetLengths()});
-        bias.AllocOnHost(Tensor<Tgpu>{bn_layout, derivedBnDesc.GetLengths()});
+        out.AllocOnHost(Tensor<TInput>{bn_layout, in_len});
+        scale.AllocOnHost(Tensor<TInput>{bn_layout, derivedBnDesc.GetLengths()});
+        bias.AllocOnHost(Tensor<TInput>{bn_layout, derivedBnDesc.GetLengths()});
 
-        /*
-        auto gen_value_scale_bias = [](auto...) {
-            return prng::gen_descreet_uniform_sign<Tgpu>(1e-2, 100);
-        };
-
-        scale.InitHostData(scale.GetTensor().desc.GetElementSize(), true, gen_value_scale_bias);
-        bias.InitHostData(bias.GetTensor().desc.GetElementSize(), true, gen_value_scale_bias);
-        */
         for(int i = 0; i < scale.GetVector().size(); i++)
         {
-            scale.GetVector()[i] = prng::gen_canonical<Tgpu>();
-            bias.GetVector()[i]  = prng::gen_canonical<Tgpu>();
+            scale.GetVector()[i] = prng::gen_canonical<TInput>();
+            bias.GetVector()[i]  = prng::gen_canonical<TInput>();
         }
     }
     if(isFwdInfer)
     {
-        estMean.AllocOnHost(Tensor<Tmix>{bn_layout, derivedBnDesc.GetLengths()});
-        estVariance.AllocOnHost(Tensor<Tmix>{bn_layout, derivedBnDesc.GetLengths()});
+        estMean.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
+        estVariance.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
 
         auto gen_value_emean = [](auto...) {
-            return prng::gen_descreet_uniform_sign<Tmix>(1e-2, 100);
+            return prng::gen_descreet_uniform_sign<TAcc>(1e-2, 100);
         };
         estMean.InitHostData(estMean.GetTensor().desc.GetElementSize(), true, gen_value_emean);
     }
     else if(isFwdTrain)
     {
-        savedMean.AllocOnHost(Tensor<Tmix>{bn_layout, derivedBnDesc.GetLengths()});
-        savedVariance.AllocOnHost(Tensor<Tmix>{bn_layout, derivedBnDesc.GetLengths()});
-        runMean.AllocOnHost(Tensor<Tmix>{bn_layout, derivedBnDesc.GetLengths()});
-        runVariance.AllocOnHost(Tensor<Tmix>{bn_layout, derivedBnDesc.GetLengths()});
-
-        /*
-        auto gen_var = [](auto...) {
-            return static_cast<Tmix>(1e-2 * (prng::gen_0_to_B(100) + 1));
-        };
-        runMean.InitHostData(runMean.GetTensor().desc.GetElementSize(), true, gen_var);
-        runVariance.InitHostData(runVariance.GetTensor().desc.GetElementSize(), true, gen_var);
-        */
+        savedMean.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
+        savedVariance.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
+        runMean.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
+        runVariance.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
 
         for(int i = 0; i < runVariance.GetVector().size(); i++)
         {
-            runMean.GetVector()[i]     = prng::gen_canonical<Tmix>();
-            runVariance.GetVector()[i] = prng::gen_canonical<Tmix>();
+            runMean.GetVector()[i]     = prng::gen_canonical<TAcc>();
+            runVariance.GetVector()[i] = prng::gen_canonical<TAcc>();
         }
     }
     else if(isBwd)
     {
 
-        out_bwd.AllocOnHost(Tensor<Tmix>{bn_layout, in_len});
+        out_bwd.AllocOnHost(Tensor<TOut>{bn_layout, in_len});
 
-        bnScale.AllocOnHost(Tensor<Tgpu>{bn_layout, derivedBnDesc.GetLengths()});
-        dy.AllocOnHost(Tensor<Tmix>{bn_layout, in_len});
+        bnScale.AllocOnHost(Tensor<TScaleBias>{bn_layout, derivedBnDesc.GetLengths()});
+        dy.AllocOnHost(Tensor<TOut>{bn_layout, in_len});
 
         auto gen_var_bwd = [](auto...) {
-            return static_cast<Tmix>(1e-2 * (prng::gen_0_to_B(100) + 1));
+            return static_cast<TOut>(1e-2 * (prng::gen_0_to_B(100) + 1));
         };
         dy.InitHostData(dy.GetTensor().desc.GetElementSize(), true, gen_var_bwd);
 
-        dScale.AllocOnHost(Tensor<Tmix>{bn_layout, derivedBnDesc.GetLengths()});
-        dBias.AllocOnHost(Tensor<Tmix>{bn_layout, derivedBnDesc.GetLengths()});
-        savedMean.AllocOnHost(Tensor<Tmix>{bn_layout, derivedBnDesc.GetLengths()});
-        savedInvVar.AllocOnHost(Tensor<Tmix>{bn_layout, derivedBnDesc.GetLengths()});
+        dScale.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
+        dBias.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
+        savedMean.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
+        savedInvVar.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
 
-        auto gen_value = [](auto...) { return prng::gen_descreet_unsigned<Tgpu>(1e-2, 100); };
+        auto gen_value = [](auto...) { return prng::gen_descreet_unsigned<TInput>(1e-2, 100); };
         bnScale.InitHostData(bnScale.GetTensor().desc.GetElementSize(), true, gen_value);
 
         auto gen_in_var = [](auto...) {
-            return static_cast<Tmix>(1e-2 * (prng::gen_0_to_B(100) + 1));
+            return static_cast<TAcc>(1e-2 * (prng::gen_0_to_B(100) + 1));
         };
         savedMean.InitHostData(savedMean.GetTensor().desc.GetElementSize(), true, gen_in_var);
         savedInvVar.InitHostData(savedInvVar.GetTensor().desc.GetElementSize(), true, gen_in_var);
@@ -320,8 +308,8 @@ int BNFin<Tgpu, Tref, Tmix>::GetandSetData()
     return (0);
 }
 
-template <typename Tgpu, typename Tref, typename Tmix>
-std::vector<int> BNFin<Tgpu, Tref, Tmix>::GetInputTensorLengths()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+std::vector<int> BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetInputTensorLengths()
 {
     int in_n = command["batchsize"];
     int in_c = command["in_channels"];
@@ -342,8 +330,8 @@ std::vector<int> BNFin<Tgpu, Tref, Tmix>::GetInputTensorLengths()
     }
 }
 
-template <typename Tgpu, typename Tref, typename Tmix>
-std::vector<int> BNFin<Tgpu, Tref, Tmix>::GetBiasTensorLengths()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+std::vector<int> BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetBiasTensorLengths()
 {
     int spatial_dim = 2;
     if(command["in_d"] > 1)
@@ -358,8 +346,8 @@ std::vector<int> BNFin<Tgpu, Tref, Tmix>::GetBiasTensorLengths()
     return bias_lens;
 }
 
-template <typename Tgpu, typename Tref, typename Tmix>
-int BNFin<Tgpu, Tref, Tmix>::ProcessStep(const std::string& step_name)
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+int BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::ProcessStep(const std::string& step_name)
 {
     steps_processed.push_back(step_name);
     if(step_name == "applicability")
@@ -375,8 +363,8 @@ int BNFin<Tgpu, Tref, Tmix>::ProcessStep(const std::string& step_name)
     return 0;
 }
 
-template <typename Tgpu, typename Tref, typename Tmix>
-int BNFin<Tgpu, Tref, Tmix>::SetBNDescriptor()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+int BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::SetBNDescriptor()
 {
     // batch norm mode type
     bn_mode = command["mode"] == 0 ? miopenBNPerActivation : miopenBNSpatial;
@@ -413,8 +401,8 @@ int BNFin<Tgpu, Tref, Tmix>::SetBNDescriptor()
     return miopenStatusSuccess;
 }
 
-template <typename Tgpu, typename Tref, typename Tmix>
-auto BNFin<Tgpu, Tref, Tmix>::GetFwdTrainSolvers()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+auto BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetFwdTrainSolvers()
 {
     return miopen::solver::SolverContainer<miopen::solver::batchnorm::BnFwdTrainingSpatialSingle,
                                            //  solver::batchnorm::BnCKFwdTraining,
@@ -422,15 +410,15 @@ auto BNFin<Tgpu, Tref, Tmix>::GetFwdTrainSolvers()
                                            miopen::solver::batchnorm::BnFwdTrainingPerActivation>{};
 }
 
-template <typename Tgpu, typename Tref, typename Tmix>
-auto BNFin<Tgpu, Tref, Tmix>::GetFwdInferSolvers()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+auto BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetFwdInferSolvers()
 {
-    return miopen::solver::SolverContainer<miopen::solver::batchnorm::BnFwdInference,
-                                           //  miopen::solver::batchnorm::BnCKFwdInference>{};
+    return miopen::solver::SolverContainer<miopen::solver::batchnorm::BnFwdInference>{};
+    //  miopen::solver::batchnorm::BnCKFwdInference
 }
 
-template <typename Tgpu, typename Tref, typename Tmix>
-auto BNFin<Tgpu, Tref, Tmix>::GetBwdSolvers()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+auto BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetBwdSolvers()
 {
     return miopen::solver::SolverContainer<miopen::solver::batchnorm::BnBwdTrainingSpatialSingle,
                                            //  miopen::solver::batchnorm::BnCKBwdBackward,
@@ -438,8 +426,9 @@ auto BNFin<Tgpu, Tref, Tmix>::GetBwdSolvers()
                                            miopen::solver::batchnorm::BnBwdTrainingPerActivation>{};
 }
 
-template <typename Tgpu, typename Tref, typename Tmix>
-miopen::batchnorm::ProblemDescription BNFin<Tgpu, Tref, Tmix>::GetProblemDescription()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+miopen::batchnorm::ProblemDescription
+BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetProblemDescription()
 {
     if(isFwdTrain)
     {
@@ -462,22 +451,25 @@ miopen::batchnorm::ProblemDescription BNFin<Tgpu, Tref, Tmix>::GetProblemDescrip
                                                      out.GetTensor().desc,
                                                      scale.GetTensor().desc,
                                                      bias.GetTensor().desc,
-                                                     savedMean.GetTensor().desc,
-                                                     savedVariance.GetTensor().desc,
+                                                     estMean.GetTensor().desc,
+                                                     estVariance.GetTensor().desc,
                                                      epsilon);
     }
     else if(isBwd)
     {
+        // const auto useSaved = savedMean.GetTensor() != nullptr && savedVariance.GetTensor() !=
+        // nullptr; ??
+        bool useSaved = 0;
         return miopen::batchnorm::ProblemDescription(bn_mode,
                                                      in.GetTensor().desc,
-                                                     out.GetTensor().desc,
+                                                     dy.GetTensor().desc,
                                                      out_ref.GetTensor().desc,
                                                      scale.GetTensor().desc,
                                                      bias.GetTensor().desc,
                                                      savedMean.GetTensor().desc,
                                                      savedVariance.GetTensor().desc,
                                                      epsilon,
-                                                     saveMeanVar);
+                                                     useSaved);
     }
     else
     {
@@ -485,9 +477,9 @@ miopen::batchnorm::ProblemDescription BNFin<Tgpu, Tref, Tmix>::GetProblemDescrip
     }
 }
 
-template <typename Tgpu, typename Tref, typename Tmix>
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
 std::vector<miopen::solver::ConvSolution>
-BNFin<Tgpu, Tref, Tmix>::GetBNSolutions(miopen::ExecutionContext& ctx)
+BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetBNSolutions(miopen::ExecutionContext& ctx)
 {
     const auto problem = GetProblemDescription();
     if(isFwdTrain)
@@ -508,8 +500,8 @@ BNFin<Tgpu, Tref, Tmix>::GetBNSolutions(miopen::ExecutionContext& ctx)
     }
 }
 
-template <typename Tgpu, typename Tref, typename Tmix>
-auto BNFin<Tgpu, Tref, Tmix>::GetAlgorithm()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+auto BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetAlgorithm()
 {
     if(isFwdTrain)
     {
@@ -533,8 +525,8 @@ auto BNFin<Tgpu, Tref, Tmix>::GetAlgorithm()
     }
 }
 
-template <typename Tgpu, typename Tref, typename Tmix>
-int BNFin<Tgpu, Tref, Tmix>::MIOpenCompile(TuningOp tuning_op)
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+int BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::MIOpenCompile(TuningOp tuning_op)
 {
     std::cerr << "MIOpenFinCompile" << std::endl;
     std::cerr << "Processing command: " << command << std::endl;
@@ -575,6 +567,9 @@ int BNFin<Tgpu, Tref, Tmix>::MIOpenCompile(TuningOp tuning_op)
     json comp_res;
 
     for(const auto& sln : GetBNSolutions(ctx))
+        std::cout << "SLN: " << sln.solver_id << std::endl;
+
+    for(const auto& sln : GetBNSolutions(ctx))
     {
         json res_item;
         res_item["reason"]    = std::string("No solutions: ");
@@ -589,7 +584,9 @@ int BNFin<Tgpu, Tref, Tmix>::MIOpenCompile(TuningOp tuning_op)
             {
                 res_item["solver_name"] = sln.solver_id;
                 std::cout << sln.solver_id << std::endl;
+                std::cout << res_item["solver_name"] << std::endl;
                 const auto solver = miopen::fin_interface::GetBatchNormSolver(sln.solver_id);
+
                 if(!solver.IsValid())
                 {
                     res_item["reason"] = "Solver not valid";
@@ -640,8 +637,8 @@ int BNFin<Tgpu, Tref, Tmix>::MIOpenCompile(TuningOp tuning_op)
     return 1;
 }
 
-template <typename Tgpu, typename Tref, typename Tmix>
-int BNFin<Tgpu, Tref, Tmix>::MIOpenEval(TuningOp tuning_op)
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+int BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::MIOpenEval(TuningOp tuning_op)
 {
     std::cerr << "MIOpenEval" << std::endl;
     std::cerr << "Processing command: " << command << std::endl;
@@ -723,11 +720,11 @@ int BNFin<Tgpu, Tref, Tmix>::MIOpenEval(TuningOp tuning_op)
                     {
                         std::cerr << "Allocating " << solution.workspace_sz
                                   << " bytes for workspace" << std::endl;
-                        workspace = tensor<Tgpu>{q,
-                                                 std::vector<size_t>{static_cast<size_t>(
-                                                     solution.workspace_sz / sizeof(Tgpu))},
-                                                 false,
-                                                 false};
+                        workspace = tensor<TInput>{q,
+                                                   std::vector<size_t>{static_cast<size_t>(
+                                                       solution.workspace_sz / sizeof(TInput))},
+                                                   false,
+                                                   false};
                         workspace.AllocateBuffers();
                     }
                     if(!solution.invoker_factory)
@@ -786,11 +783,12 @@ int BNFin<Tgpu, Tref, Tmix>::MIOpenEval(TuningOp tuning_op)
     return 1;
 }
 
-template <typename Tgpu, typename Tref, typename Tmix>
-float BNFin<Tgpu, Tref, Tmix>::PerfTune(const miopen::Handle& h,
-                                        const miopen::solver::ConvSolution& solution,
-                                        miopen::PerformanceDb& db,
-                                        miopen::ExecutionContext& perf_ctx)
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+float BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::PerfTune(
+    const miopen::Handle& h,
+    const miopen::solver::ConvSolution& solution,
+    miopen::PerformanceDb& db,
+    miopen::ExecutionContext& perf_ctx)
 {
 
     float kernel_time     = -1;
@@ -805,9 +803,9 @@ float BNFin<Tgpu, Tref, Tmix>::PerfTune(const miopen::Handle& h,
     return kernel_time;
 }
 
-template <typename Tgpu, typename Tref, typename Tmix>
-float BNFin<Tgpu, Tref, Tmix>::FindTune(const miopen::Handle& h,
-                                        const miopen::solver::ConvSolution& solution)
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+float BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::FindTune(
+    const miopen::Handle& h, const miopen::solver::ConvSolution& solution)
 {
     float kernel_time     = -1;
     const auto invoke_ctx = GetInvokeCtx();
@@ -816,8 +814,8 @@ float BNFin<Tgpu, Tref, Tmix>::FindTune(const miopen::Handle& h,
     return kernel_time;
 }
 
-template <typename Tgpu, typename Tref, typename Tmix>
-const miopen::AnyInvokeParams BNFin<Tgpu, Tref, Tmix>::GetInvokeCtx()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+const miopen::AnyInvokeParams BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetInvokeCtx()
 {
     const auto invoke_ctx = [&] -> miopen::AnyInvokeParams {
         const auto bn_dir = GetDirection();
