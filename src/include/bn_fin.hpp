@@ -417,6 +417,7 @@ template <typename Tgpu, typename Tref, typename Tmix>
 auto BNFin<Tgpu, Tref, Tmix>::GetFwdTrainSolvers()
 {
     return miopen::solver::SolverContainer<miopen::solver::batchnorm::BnFwdTrainingSpatialSingle,
+                                           //  solver::batchnorm::BnCKFwdTraining,
                                            miopen::solver::batchnorm::BnFwdTrainingSpatialMultiple,
                                            miopen::solver::batchnorm::BnFwdTrainingPerActivation>{};
 }
@@ -424,13 +425,15 @@ auto BNFin<Tgpu, Tref, Tmix>::GetFwdTrainSolvers()
 template <typename Tgpu, typename Tref, typename Tmix>
 auto BNFin<Tgpu, Tref, Tmix>::GetFwdInferSolvers()
 {
-    return miopen::solver::SolverContainer<miopen::solver::batchnorm::BnFwdInference>{};
+    return miopen::solver::SolverContainer<miopen::solver::batchnorm::BnFwdInference,
+                                           //  miopen::solver::batchnorm::BnCKFwdInference>{};
 }
 
 template <typename Tgpu, typename Tref, typename Tmix>
 auto BNFin<Tgpu, Tref, Tmix>::GetBwdSolvers()
 {
     return miopen::solver::SolverContainer<miopen::solver::batchnorm::BnBwdTrainingSpatialSingle,
+                                           //  miopen::solver::batchnorm::BnCKBwdBackward,
                                            miopen::solver::batchnorm::BnBwdTrainingSpatialMultiple,
                                            miopen::solver::batchnorm::BnBwdTrainingPerActivation>{};
 }
