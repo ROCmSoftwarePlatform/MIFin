@@ -230,7 +230,10 @@ class BaseFin
 
             if(hsaco.empty())
             {
-                auto p = handle.LoadProgram(kern.kernel_file, kern.comp_options, "");
+                std::cout << "Kernel file: " << kern.kernel_file << std::endl;
+                std::cout << "K comp opts: " << kern.comp_options << std::endl;
+                comp_opts = kern.comp_options + " -mcpu=" + handle.GetDeviceName();
+                auto p = handle.LoadProgram(kern.kernel_file, comp_opts, "");
 
                 try
                 {

@@ -614,7 +614,7 @@ int BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::MIOpenCompile(TuningOp tuning_o
                     res_item["kernel_objects"] =
                         BuildJsonKernelList(handle, sln.construction_params);
                 }
-                res_item["tunable"] = true;
+                res_item["tunable"] = solver.IsTunable();
                 res_item["reason"]  = "Success";
                 return true;
             }
