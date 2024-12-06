@@ -548,12 +548,12 @@ int BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::MIOpenCompile(TuningOp tuning_o
 #endif
     ctx.SetStream(&handle);
 
-    const auto problem         = GetProblemDescription();
-    const auto network_config  = problem.MakeNetworkConfig();
-    output["network_config"]   = network_config;
+    const auto problem        = GetProblemDescription();
+    const auto network_config = problem.MakeNetworkConfig();
+    output["network_config"]  = network_config;
     std::ostringstream ss;
     problem.Serialize(ss);
-    output["db_key"] = ss.str();
+    // output["db_key"] = ss.str();
     output["is_winograd_only"] = false;
 
     json find_result;
@@ -667,7 +667,7 @@ int BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::MIOpenEval(TuningOp tuning_op)
     output["network_config"]   = network_config;
     std::ostringstream ss;
     problem.Serialize(ss);
-    output["db_key"] = ss.str();
+    // output["db_key"] = ss.str();
 
     auto db = GetDb(ctx, problem);
     json eval_result;

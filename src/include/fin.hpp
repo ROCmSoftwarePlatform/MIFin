@@ -223,6 +223,7 @@ class BaseFin
             {
                 comp_opts += " -mcpu=" + handle.GetDeviceName();
             }
+            comp_opts += " -mcpu=" + handle.GetDeviceName();
             auto hsaco = miopen::LoadBinary(handle.GetTargetProperties(),
                                             handle.GetMaxComputeUnits(),
                                             kern.kernel_file,
@@ -233,7 +234,7 @@ class BaseFin
                 std::cout << "Kernel file: " << kern.kernel_file << std::endl;
                 std::cout << "K comp opts: " << kern.comp_options << std::endl;
                 comp_opts = kern.comp_options + " -mcpu=" + handle.GetDeviceName();
-                auto p = handle.LoadProgram(kern.kernel_file, comp_opts, "");
+                auto p    = handle.LoadProgram(kern.kernel_file, comp_opts, "");
 
                 try
                 {
