@@ -72,12 +72,6 @@ namespace fs = miopen::fs;
 
 namespace fin {
 
-enum TuningOp
-{
-    Perf = 0,
-    Find = 1,
-};
-
 using json = nlohmann::json;
 // TODO: Create a config class to encapsulate config
 // related code, such as checking direction etc
@@ -164,13 +158,13 @@ class ConvFin : public BaseFin
     json command;
     json job;
 
-    tensor<Tgpu, Tcpu> inputTensor;
-    tensor<Tgpu, Tcpu> inputTensor_vect4;
-    tensor<Tgpu, Tcpu> outputTensor;
-    tensor<Tgpu, Tcpu> weightTensor;
-    tensor<Tgpu, Tcpu> weightTensor_vect4;
-    tensor<Tgpu, Tcpu> biasTensor;
-    tensor<Tgpu, Tcpu> workspace;
+    tensor<Tgpu> inputTensor;
+    tensor<Tgpu> inputTensor_vect4;
+    tensor<Tgpu> outputTensor;
+    tensor<Tgpu> weightTensor;
+    tensor<Tgpu> weightTensor_vect4;
+    tensor<Tgpu> biasTensor;
+    tensor<Tgpu> workspace;
     miopen::ConvolutionDescriptor convDesc;
 
     bool wrw_allowed = 0, bwd_allowed = 0, forward_allowed = 1;
@@ -395,7 +389,7 @@ float ConvFin<Tgpu, Tref>::PerfTune(const miopen::Handle& h,
 
         const auto invoker =
             h.PrepareInvoker(*solution.invoker_factory, solution.construction_params);
-        kernel_time                = BenchmarkInvoker(invoker, h, invoke_ctx);
+        kernel_time                = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
         res_item["kernel_objects"] = BuildJsonKernelList(h, solution.construction_params);
     }
     else if(conv_dir == miopen::conv::Direction::BackwardData)
@@ -417,7 +411,7 @@ float ConvFin<Tgpu, Tref>::PerfTune(const miopen::Handle& h,
 
         const auto invoker =
             h.PrepareInvoker(*solution.invoker_factory, solution.construction_params);
-        kernel_time                = BenchmarkInvoker(invoker, h, invoke_ctx);
+        kernel_time                = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
         res_item["kernel_objects"] = BuildJsonKernelList(h, solution.construction_params);
     }
     else if(conv_dir == miopen::conv::Direction::BackwardWeights)
@@ -439,7 +433,7 @@ float ConvFin<Tgpu, Tref>::PerfTune(const miopen::Handle& h,
 
         const auto invoker =
             h.PrepareInvoker(*solution.invoker_factory, solution.construction_params);
-        kernel_time                = BenchmarkInvoker(invoker, h, invoke_ctx);
+        kernel_time                = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
         res_item["kernel_objects"] = BuildJsonKernelList(h, solution.construction_params);
     }
     else
@@ -478,7 +472,7 @@ float ConvFin<Tgpu, Tref>::FindTune(const miopen::Handle& h,
                                            workspace.gpuData.buf.get(),
                                            workspace.desc.GetNumBytes(),
                                            convDesc.attribute.gfx90aFp16alt.GetFwd()};
-        kernel_time = BenchmarkInvoker(invoker, h, invoke_ctx);
+        kernel_time = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
     }
     else if(conv_dir == miopen::conv::Direction::BackwardData)
     {
@@ -492,7 +486,7 @@ float ConvFin<Tgpu, Tref>::FindTune(const miopen::Handle& h,
                                            workspace.gpuData.buf.get(),
                                            workspace.desc.GetNumBytes(),
                                            convDesc.attribute.gfx90aFp16alt.GetBwd()};
-        kernel_time = BenchmarkInvoker(invoker, h, invoke_ctx);
+        kernel_time = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
     }
     else if(conv_dir == miopen::conv::Direction::BackwardWeights)
     {
@@ -506,7 +500,7 @@ float ConvFin<Tgpu, Tref>::FindTune(const miopen::Handle& h,
                                           workspace.gpuData.buf.get(),
                                           workspace.desc.GetNumBytes(),
                                           convDesc.attribute.gfx90aFp16alt.GetWrW()};
-        kernel_time = BenchmarkInvoker(invoker, h, invoke_ctx);
+        kernel_time = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
     }
     else
     {
@@ -630,7 +624,7 @@ int ConvFin<Tgpu, Tref>::MIOpenEval(TuningOp tuning_op)
             if(workspace_sz > workspace.desc.GetNumBytes())
             {
                 std::cerr << "Allocating " << workspace_sz << " bytes for workspace" << std::endl;
-                workspace = tensor<Tgpu, Tref>{
+                workspace = tensor<Tgpu>{
                     q,
                     std::vector<size_t>{static_cast<size_t>(workspace_sz / sizeof(Tgpu))},
                     false,
@@ -1720,7 +1714,7 @@ namespace detail {
 template <typename T>
 T RanGenWeights()
 {
-    return RAN_GEN<T>(static_cast<T>(-0.5), static_cast<T>(0.5));
+    return prng::RAN_GEN<T>(static_cast<T>(-0.5), static_cast<T>(0.5));
 }
 
 // Shift FP16 distribution towards positive numbers,
@@ -1728,7 +1722,7 @@ T RanGenWeights()
 template <>
 float16 RanGenWeights()
 {
-    return RAN_GEN<float16>(static_cast<float16>(-1.0 / 3.0), static_cast<float16>(0.5));
+    return prng::RAN_GEN<float16>(static_cast<float16>(-1.0 / 3.0), static_cast<float16>(0.5));
 }
 
 } // namespace detail
@@ -1806,11 +1800,11 @@ int ConvFin<Tgpu, Tref>::CalcWorkspace()
     const auto wsSizeof =
         std::max(std::max(ws_sizeof_find_bwd, ws_sizeof_find_wrw), ws_sizeof_find_fwd);
     if(wsSizeof != 0)
-        workspace = tensor<Tgpu, Tref>{q,
-                                       std::vector<unsigned int>{static_cast<unsigned int>(
-                                           std::ceil(wsSizeof / sizeof(Tgpu)))},
-                                       true,
-                                       false};
+        workspace = tensor<Tgpu>{q,
+                                 std::vector<unsigned int>{
+                                     static_cast<unsigned int>(std::ceil(wsSizeof / sizeof(Tgpu)))},
+                                 true,
+                                 false};
     return wsSizeof;
 }
 
@@ -1821,13 +1815,13 @@ Tgpu init_in(bool is_int8, size_t idx)
     if(is_int8)
     {
         float Data_scale = 127.0;
-        return static_cast<Tgpu>(Data_scale *
-                                 RAN_GEN<float>(static_cast<float>(0.0), static_cast<float>(1.0)));
+        return static_cast<Tgpu>(
+            Data_scale * prng::RAN_GEN<float>(static_cast<float>(0.0), static_cast<float>(1.0)));
     }
     else
     {
         Tgpu Data_scale = static_cast<Tgpu>(0.01);
-        return Data_scale * RAN_GEN<Tgpu>(static_cast<Tgpu>(0.0), static_cast<Tgpu>(1.0));
+        return Data_scale * prng::RAN_GEN<Tgpu>(static_cast<Tgpu>(0.0), static_cast<Tgpu>(1.0));
     }
 }
 
@@ -1842,7 +1836,7 @@ Tgpu init_out(bool is_int8, size_t idx)
     else
     {
         Tgpu Data_scale = static_cast<Tgpu>(0.01);
-        return Data_scale * RAN_GEN<Tgpu>(static_cast<Tgpu>(0.0), static_cast<Tgpu>(1.0));
+        return Data_scale * prng::RAN_GEN<Tgpu>(static_cast<Tgpu>(0.0), static_cast<Tgpu>(1.0));
     }
 }
 
@@ -1868,7 +1862,7 @@ Tgpu init_bias(bool is_int8, size_t idx)
     (void)idx;
     (void)is_int8;
     return static_cast<Tgpu>(idx % 8) +
-           RAN_GEN<Tgpu>(static_cast<Tgpu>(0.0), static_cast<Tgpu>(1.0));
+           prng::RAN_GEN<Tgpu>(static_cast<Tgpu>(0.0), static_cast<Tgpu>(1.0));
 }
 
 template <typename Tgpu, typename Tref>

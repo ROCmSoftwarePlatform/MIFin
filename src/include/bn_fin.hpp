@@ -29,7 +29,11 @@
 
 #include "error.hpp"
 #include "fin.hpp"
-#include "tensor.hpp"
+#include "random.hpp"
+#include "rocrand_wrapper.hpp"
+#include "gpuMemTensor.hpp"
+#include "random_test.hpp"
+#include "tensor_holder.hpp"
 
 #include <miopen/execution_context.hpp>
 #include <miopen/filesystem.hpp>
@@ -41,17 +45,22 @@
 #include <miopen/find_solution.hpp>
 #include <miopen/solver.hpp>
 #include <miopen/solver_id.hpp>
+#include <miopen/driver_arguments.hpp>
+#include <miopen/tensor.hpp>
+#include <miopen/fin/fin_interface.hpp>
 
 #include <nlohmann/json.hpp>
 
 #define EPSILON 1e-3
 
 namespace fs = miopen::fs;
-
 namespace fin {
 
-using json = nlohmann::json;
-template <typename Tgpu, typename Tcpu>
+template <typename TInput,
+          typename Tref,
+          typename TAcc       = TInput,
+          typename TScaleBias = TInput,
+          typename TOut       = TInput>
 class BNFin : public BaseFin
 {
     public:
@@ -68,16 +77,16 @@ class BNFin : public BaseFin
         command         = job["config"];
         command["bias"] = 0;
         SetBNDescriptor();
-        is_fwd_train = (job["direction"].get<int>() == 0 || job["direction"].get<int>() & 1);
-        is_fwd_infer = (job["direction"].get<int>() == 0 || job["direction"].get<int>() & 2);
-        is_bwd       = (job["direction"].get<int>() == 0 || job["direction"].get<int>() & 4);
+        isFwdTrain = (job["direction"].get<int>() == 0 || job["direction"].get<int>() & 1);
+        isFwdInfer = (job["direction"].get<int>() == 0 || job["direction"].get<int>() & 2);
+        isBwd      = (job["direction"].get<int>() == 0 || job["direction"].get<int>() & 4);
     }
 
     // Getters and setters
-    std::vector<int> GetInputTensorLengths();
+    std::vector<int> GetInputTensorLengths(); // checked
     std::vector<int> GetBiasTensorLengths();
     int SetBNDescriptor();
-    miopen::conv::Direction GetDirection() const;
+    miopen::debug::BatchNormDirection_t GetDirection() const;
 
     int ProcessStep(const std::string& step_name) override;
 
@@ -87,7 +96,17 @@ class BNFin : public BaseFin
     std::vector<miopen::solver::ConvSolution> GetBNSolutions(miopen::ExecutionContext& ctx);
     miopen::batchnorm::ProblemDescription GetProblemDescription();
     auto GetAlgorithm();
-    int MIOpenFindCompile();
+
+    int MIOpenCompile(TuningOp tuning_op);
+
+    float PerfTune(const miopen::Handle& h,
+                   const miopen::solver::ConvSolution& solution,
+                   miopen::PerformanceDb& db,
+                   miopen::ExecutionContext& perf_ctx);
+    int MIOpenEval(TuningOp tuning_op);
+
+    float FindTune(const miopen::Handle& h, const miopen::solver::ConvSolution& solution);
+    const miopen::AnyInvokeParams GetInvokeCtx();
 
     // Utility functions
     auto GetFwdTrainSolvers();
@@ -98,27 +117,74 @@ class BNFin : public BaseFin
     json job;
 
     miopenBatchNormMode_t bn_mode;
+    miopenActivationMode_t activ_mode = miopenActivationRELU;
     std::vector<std::string> steps_processed;
-    bool saveMeanVar        = false;
-    bool keepRunningMeanVar = false;
-    double epsilon          = 1.0;
+    bool saveMeanVar        = false;                      // checked
+    bool keepRunningMeanVar = false;                      // checked
+    Tref epsilon            = static_cast<Tref>(EPSILON); // checked
     double expAvgFactor     = 1.0;
     bool isDepthSpecified   = false;
-    bool is_fwd_train       = true;
-    bool is_fwd_infer       = false;
-    bool is_bwd             = false;
+    bool isFwdTrain         = true;
+    bool isFwdInfer         = false;
+    bool isBwd              = false;
 
-    tensor<Tgpu, Tcpu> inputTensor;
-    tensor<Tgpu, Tcpu> outputTensor;
-    tensor<Tgpu, Tcpu> biasScaleTensor;
+    tensor<TInput> workspace;
+    GpumemTensor<TInput> in;
+    GpumemTensor<TInput> out;
+    GpumemTensor<Tref> out_ref;
+
+    // forward
+    GpumemTensor<TScaleBias> scale;
+    GpumemTensor<TScaleBias> bias;
+
+    // forward inference
+    GpumemTensor<TAcc> estMean;
+    GpumemTensor<TAcc> estVariance;
+
+    GpumemTensor<TAcc> savedMean;
+    Tensor<Tref> savedMean_ref;
+
+    // forward training
+    GpumemTensor<TAcc> savedVariance;
+    GpumemTensor<TAcc> runMean;
+    GpumemTensor<TAcc> runVariance;
+    // ref
+    Tensor<Tref> savedVariance_ref;
+    Tensor<Tref> runMean_ref;
+    Tensor<Tref> runVariance_ref;
+
+    // backward needed different type for bwd.
+    GpumemTensor<TOut> out_bwd;
+
+    GpumemTensor<TScaleBias> bnScale;
+    GpumemTensor<TAcc> dScale;
+    GpumemTensor<TAcc> dBias;
+
+    GpumemTensor<TAcc> savedInvVar;
+    GpumemTensor<TOut> dy;
+
+    Tensor<Tref> dBias_ref;
+    Tensor<Tref> dScale_ref;
 
     // for backward
-    tensor<Tgpu, Tcpu> dyInputTensor;
-    tensor<Tgpu, Tcpu> dxOutputTensor;
+    // Tensor<TInput, Tcpu> dyInputTensor;
+    // Tensor<TInput, Tcpu> dxOutputTensor;
+
+    // Tref maxval;
+    miopenTensorLayout_t bn_layout;
 };
 
-template <typename Tgpu, typename Tref>
-int BNFin<Tgpu, Tref>::TestApplicability()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+miopen::debug::BatchNormDirection_t
+BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetDirection() const
+{
+    return isFwdTrain ? miopen::debug::BatchNormDirection_t::ForwardTraining
+                      : (isFwdInfer ? miopen::debug::BatchNormDirection_t::ForwardInference
+                                    : miopen::debug::BatchNormDirection_t::Backward);
+}
+
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+int BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::TestApplicability()
 {
 #if MIOPEN_MODE_NOGPU
     GetandSetData();
@@ -141,6 +207,7 @@ int BNFin<Tgpu, Tref>::TestApplicability()
     std::vector<std::string> app_solvers;
 
     for(const auto& sln : GetBNSolutions(ctx))
+
     {
         std::cerr << sln.solver_id << std::endl;
         if(!sln.invoker_factory)
@@ -158,65 +225,91 @@ int BNFin<Tgpu, Tref>::TestApplicability()
     return 0;
 }
 
-template <typename Tgpu, typename Tref>
-int BNFin<Tgpu, Tref>::GetandSetData()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+int BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetandSetData()
 {
 
     SetBNDescriptor();
-
     auto in_len = GetInputTensorLengths();
 
-    std::vector<int> sb_len;
-    if(bn_mode == miopenBNPerActivation)
-    {
-        // 1xCxHxW | in_len.size = 4
-        sb_len = {1, in_len[1], in_len[2], in_len[3]};
+    in.AllocOnHost(Tensor<TInput>{bn_layout, in_len});
 
-        // 1xCxDxHxW | in_len.size = 5
-        if(in_len.size() == 5)
+    auto derivedBnDesc = miopen::TensorDescriptor{};
+    miopen::DeriveBNTensorDescriptor(derivedBnDesc, in.GetTensor().desc, bn_mode);
+
+    if(isFwdInfer || isFwdTrain)
+    {
+        out.AllocOnHost(Tensor<TInput>{bn_layout, in_len});
+        scale.AllocOnHost(Tensor<TInput>{bn_layout, derivedBnDesc.GetLengths()});
+        bias.AllocOnHost(Tensor<TInput>{bn_layout, derivedBnDesc.GetLengths()});
+
+        for(int i = 0; i < scale.GetVector().size(); i++)
         {
-            sb_len.push_back(in_len[4]);
+            scale.GetVector()[i] = prng::gen_canonical<TInput>();
+            bias.GetVector()[i]  = prng::gen_canonical<TInput>();
         }
     }
-    else if(bn_mode == miopenBNSpatial)
-    { // 1xCx1x1
-        sb_len = {1, in_len[1], 1, 1};
+    if(isFwdInfer)
+    {
+        estMean.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
+        estVariance.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
 
-        // 1xCx1x1x1
-        if(in_len.size() == 5)
+        auto gen_value_emean = [](auto...) {
+            return prng::gen_descreet_uniform_sign<TAcc>(1e-2, 100);
+        };
+        estMean.InitHostData(estMean.GetTensor().desc.GetElementSize(), true, gen_value_emean);
+    }
+    else if(isFwdTrain)
+    {
+        savedMean.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
+        savedVariance.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
+        runMean.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
+        runVariance.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
+
+        for(int i = 0; i < runVariance.GetVector().size(); i++)
         {
-            sb_len.push_back(1);
+            runMean.GetVector()[i]     = prng::gen_canonical<TAcc>();
+            runVariance.GetVector()[i] = prng::gen_canonical<TAcc>();
         }
     }
-    if(command["bias"].get<int>() != 0)
+    else if(isBwd)
     {
-        biasScaleTensor = {GetHandle().GetStream(), GetBiasTensorLengths(), true, true};
+
+        out_bwd.AllocOnHost(Tensor<TOut>{bn_layout, in_len});
+
+        bnScale.AllocOnHost(Tensor<TScaleBias>{bn_layout, derivedBnDesc.GetLengths()});
+        dy.AllocOnHost(Tensor<TOut>{bn_layout, in_len});
+
+        auto gen_var_bwd = [](auto...) {
+            return static_cast<TOut>(1e-2 * (prng::gen_0_to_B(100) + 1));
+        };
+        dy.InitHostData(dy.GetTensor().desc.GetElementSize(), true, gen_var_bwd);
+
+        dScale.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
+        dBias.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
+        savedMean.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
+        savedInvVar.AllocOnHost(Tensor<TAcc>{bn_layout, derivedBnDesc.GetLengths()});
+
+        auto gen_value = [](auto...) { return prng::gen_descreet_unsigned<TInput>(1e-2, 100); };
+        bnScale.InitHostData(bnScale.GetTensor().desc.GetElementSize(), true, gen_value);
+
+        auto gen_in_var = [](auto...) {
+            return static_cast<TAcc>(1e-2 * (prng::gen_0_to_B(100) + 1));
+        };
+        savedMean.InitHostData(savedMean.GetTensor().desc.GetElementSize(), true, gen_in_var);
+        savedInvVar.InitHostData(savedInvVar.GetTensor().desc.GetElementSize(), true, gen_in_var);
     }
     else
     {
-        biasScaleTensor = {GetHandle().GetStream(), sb_len, true, true};
+        std::cout << "\nUnknown batch norm state!\n";
+        exit(EXIT_FAILURE);
     }
 
-    // sanity check for memory layout
-    if(GetMemLayout(command["in_layout"]) != miopenTensorLayout_t::miopenTensorNCHW)
-        throw std::runtime_error("Provided memory layout is :" + std::string(command["in_layout"]) +
-                                 ". Batch norm only support default NCHW");
-    if(GetMemLayout(command["in_layout"]) != miopenTensorLayout_t::miopenTensorNCHW)
-        throw std::runtime_error(
-            "Provided memory layout is : " + std::string(command["in_layout"]) +
-            ". Batch norm only support default NCHW");
-
-    inputTensor  = {GetHandle().GetStream(), in_len, true, false};
-    outputTensor = {GetHandle().GetStream(), in_len, false, true};
-
-    // backwards
-    dyInputTensor  = {GetHandle().GetStream(), in_len, false, true};
-    dxOutputTensor = {GetHandle().GetStream(), in_len, true, false};
     return (0);
 }
 
-template <typename Tgpu, typename Tref>
-std::vector<int> BNFin<Tgpu, Tref>::GetInputTensorLengths()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+std::vector<int> BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetInputTensorLengths()
 {
     int in_n = command["batchsize"];
     int in_c = command["in_channels"];
@@ -237,8 +330,8 @@ std::vector<int> BNFin<Tgpu, Tref>::GetInputTensorLengths()
     }
 }
 
-template <typename Tgpu, typename Tref>
-std::vector<int> BNFin<Tgpu, Tref>::GetBiasTensorLengths()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+std::vector<int> BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetBiasTensorLengths()
 {
     int spatial_dim = 2;
     if(command["in_d"] > 1)
@@ -253,23 +346,25 @@ std::vector<int> BNFin<Tgpu, Tref>::GetBiasTensorLengths()
     return bias_lens;
 }
 
-template <typename Tgpu, typename Tref>
-int BNFin<Tgpu, Tref>::ProcessStep(const std::string& step_name)
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+int BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::ProcessStep(const std::string& step_name)
 {
     steps_processed.push_back(step_name);
     if(step_name == "applicability")
-    {
         return TestApplicability();
-    }
+    if(step_name == "miopen_perf_compile")
+        return MIOpenCompile(TuningOp::Perf);
+    if(step_name == "miopen_perf_eval")
+        return MIOpenEval(TuningOp::Perf);
     if(step_name == "miopen_find_compile")
-    {
-        return MIOpenFindCompile();
-    }
+        return MIOpenCompile(TuningOp::Find);
+    if(step_name == "miopen_find_eval")
+        return MIOpenEval(TuningOp::Find);
     return 0;
 }
 
-template <typename Tgpu, typename Tref>
-int BNFin<Tgpu, Tref>::SetBNDescriptor()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+int BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::SetBNDescriptor()
 {
     // batch norm mode type
     bn_mode = command["mode"] == 0 ? miopenBNPerActivation : miopenBNSpatial;
@@ -280,61 +375,101 @@ int BNFin<Tgpu, Tref>::SetBNDescriptor()
     // keep running mean and variance
     keepRunningMeanVar = command["run"] == 0 ? false : true;
 
-    epsilon = 1;
+    // set & sanity check for memory layout
+    if(command["layout"] == "NCHW")
+    {
+        bn_layout = miopenTensorLayout_t::miopenTensorNCHW;
+    }
+    else if(command["layout"] == "NHWC")
+    {
+        bn_layout = miopenTensorLayout_t::miopenTensorNHWC;
+    }
+    else if(command["layout"] == "NCDHW")
+    {
+        bn_layout = miopenTensorLayout_t::miopenTensorNCDHW;
+    }
+    else if(command["layout"] == "NDHWC")
+    {
+        bn_layout = miopenTensorLayout_t::miopenTensorNDHWC;
+    }
+    else
+    {
+        throw std::runtime_error("Provided memory layout is : " + std::string(command["layout"]) +
+                                 ". Batch norm only support default NCHW, NHWC, NCDHW, NDHWC");
+    }
 
     return miopenStatusSuccess;
 }
 
-template <typename Tgpu, typename Tref>
-auto BNFin<Tgpu, Tref>::GetFwdTrainSolvers()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+auto BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetFwdTrainSolvers()
 {
     return miopen::solver::SolverContainer<miopen::solver::batchnorm::BnFwdTrainingSpatialSingle,
+                                           //  solver::batchnorm::BnCKFwdTraining,
                                            miopen::solver::batchnorm::BnFwdTrainingSpatialMultiple,
                                            miopen::solver::batchnorm::BnFwdTrainingPerActivation>{};
 }
 
-template <typename Tgpu, typename Tref>
-auto BNFin<Tgpu, Tref>::GetFwdInferSolvers()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+auto BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetFwdInferSolvers()
 {
     return miopen::solver::SolverContainer<miopen::solver::batchnorm::BnFwdInference>{};
+    //  miopen::solver::batchnorm::BnCKFwdInference
 }
 
-template <typename Tgpu, typename Tref>
-auto BNFin<Tgpu, Tref>::GetBwdSolvers()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+auto BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetBwdSolvers()
 {
     return miopen::solver::SolverContainer<miopen::solver::batchnorm::BnBwdTrainingSpatialSingle,
+                                           //  miopen::solver::batchnorm::BnCKBwdBackward,
                                            miopen::solver::batchnorm::BnBwdTrainingSpatialMultiple,
                                            miopen::solver::batchnorm::BnBwdTrainingPerActivation>{};
 }
 
-template <typename Tgpu, typename Tref>
-miopen::batchnorm::ProblemDescription BNFin<Tgpu, Tref>::GetProblemDescription()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+miopen::batchnorm::ProblemDescription
+BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetProblemDescription()
 {
-    if(is_fwd_train)
+    if(isFwdTrain)
     {
-        // return miopen::batchnorm::ProblemDescription{bn_mode,
-        //                                              inputTensor.desc,
-        //                                              outputTensor.desc,
-        //                                              biasScaleTensor.desc,
-        //                                              expAvgFactor,
-        //                                              epsilon,
-        //                                              saveMeanVar,
-        //                                              keepRunningMeanVar};
+        return miopen::batchnorm::ProblemDescription{bn_mode,
+                                                     in.GetTensor().desc,
+                                                     out.GetTensor().desc,
+                                                     scale.GetTensor().desc,
+                                                     bias.GetTensor().desc,
+                                                     savedMean.GetTensor().desc,
+                                                     savedVariance.GetTensor().desc,
+                                                     expAvgFactor,
+                                                     epsilon,
+                                                     saveMeanVar,         //?
+                                                     keepRunningMeanVar}; //?
     }
-    else if(is_fwd_infer)
+    else if(isFwdInfer)
     {
-        // return miopen::batchnorm::ProblemDescription(
-        //     bn_mode, inputTensor.desc, outputTensor.desc, biasScaleTensor.desc, epsilon);
+        return miopen::batchnorm::ProblemDescription(bn_mode,
+                                                     in.GetTensor().desc,
+                                                     out.GetTensor().desc,
+                                                     scale.GetTensor().desc,
+                                                     bias.GetTensor().desc,
+                                                     estMean.GetTensor().desc,
+                                                     estVariance.GetTensor().desc,
+                                                     epsilon);
     }
-    else if(is_bwd)
+    else if(isBwd)
     {
-        // return miopen::batchnorm::ProblemDescription(bn_mode,
-        //                                              inputTensor.desc,
-        //                                              dyInputTensor.desc,
-        //                                              dxOutputTensor.desc,
-        //                                              biasScaleTensor.desc,
-        //                                              epsilon,
-        //                                              saveMeanVar);
+        // const auto useSaved = savedMean.GetTensor() != nullptr && savedVariance.GetTensor() !=
+        // nullptr; ??
+        bool useSaved = 0;
+        return miopen::batchnorm::ProblemDescription(bn_mode,
+                                                     in.GetTensor().desc,
+                                                     dy.GetTensor().desc,
+                                                     out_ref.GetTensor().desc,
+                                                     scale.GetTensor().desc,
+                                                     bias.GetTensor().desc,
+                                                     savedMean.GetTensor().desc,
+                                                     savedVariance.GetTensor().desc,
+                                                     epsilon,
+                                                     useSaved);
     }
     else
     {
@@ -342,20 +477,20 @@ miopen::batchnorm::ProblemDescription BNFin<Tgpu, Tref>::GetProblemDescription()
     }
 }
 
-template <typename Tgpu, typename Tref>
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
 std::vector<miopen::solver::ConvSolution>
-BNFin<Tgpu, Tref>::GetBNSolutions(miopen::ExecutionContext& ctx)
+BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetBNSolutions(miopen::ExecutionContext& ctx)
 {
     const auto problem = GetProblemDescription();
-    if(is_fwd_train)
+    if(isFwdTrain)
     {
         return GetFwdTrainSolvers().SearchForSolutions(ctx, problem, 1);
     }
-    else if(is_fwd_infer)
+    else if(isFwdInfer)
     {
         return GetFwdInferSolvers().SearchForSolutions(ctx, problem, 1);
     }
-    else if(is_bwd)
+    else if(isBwd)
     {
         return GetBwdSolvers().SearchForSolutions(ctx, problem, 1);
     }
@@ -365,20 +500,20 @@ BNFin<Tgpu, Tref>::GetBNSolutions(miopen::ExecutionContext& ctx)
     }
 }
 
-template <typename Tgpu, typename Tref>
-auto BNFin<Tgpu, Tref>::GetAlgorithm()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+auto BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetAlgorithm()
 {
-    if(is_fwd_train)
+    if(isFwdTrain)
     {
         return bn_mode == miopenBNSpatial
                    ? miopen::AlgorithmName{"miopenBatchNormForwardTrainingSpatial"}
                    : miopen::AlgorithmName{"miopenBatchNormForwardTrainingPerActivation"};
     }
-    else if(is_fwd_infer)
+    else if(isFwdInfer)
     {
         return miopen::AlgorithmName{"miopenBatchNormalizationForwardInference"};
     }
-    else if(is_bwd)
+    else if(isBwd)
     {
         return bn_mode == miopenBNSpatial
                    ? miopen::AlgorithmName{"miopenBatchNormBackwardPropSpatial"}
@@ -390,8 +525,8 @@ auto BNFin<Tgpu, Tref>::GetAlgorithm()
     }
 }
 
-template <typename Tgpu, typename Tref>
-int BNFin<Tgpu, Tref>::MIOpenFindCompile()
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+int BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::MIOpenCompile(TuningOp tuning_op)
 {
     std::cerr << "MIOpenFinCompile" << std::endl;
     std::cerr << "Processing command: " << command << std::endl;
@@ -399,7 +534,7 @@ int BNFin<Tgpu, Tref>::MIOpenFindCompile()
     GetandSetData();
 #else
     throw std::runtime_error(
-        "Unable to perform MIOpenFindCompile MIOpen was not compiled using HIPNOGPU backend");
+        "Unable to perform MIOpenCompile MIOpen was not compiled using HIPNOGPU backend");
 #endif
     auto& handle = GetHandle();
     // cppcheck-suppress unreadVariable
@@ -413,10 +548,12 @@ int BNFin<Tgpu, Tref>::MIOpenFindCompile()
 #endif
     ctx.SetStream(&handle);
 
-    const auto problem         = GetProblemDescription();
-    const auto network_config  = problem.MakeNetworkConfig();
-    output["network_config"]   = network_config;
-    output["db_key"]           = network_config.ToString();
+    const auto problem        = GetProblemDescription();
+    const auto network_config = problem.MakeNetworkConfig();
+    output["network_config"]  = network_config;
+    std::ostringstream ss;
+    problem.Serialize(ss);
+    // output["db_key"] = ss.str();
     output["is_winograd_only"] = false;
 
     json find_result;
@@ -425,63 +562,327 @@ int BNFin<Tgpu, Tref>::MIOpenFindCompile()
     std::cerr << "Job Num CU: " << job["num_cu"]
               << ": Handle Num Cu: " << handle.GetMaxComputeUnits() << std::endl;
 
+    if(job.contains("dynamic_only"))
+        ctx.use_dynamic_solutions_only = true;
+
+    auto db = GetDb(ctx);
+    json comp_res;
+
+    for(const auto& sln : GetBNSolutions(ctx))
+        std::cout << "SLN: " << sln.solver_id << std::endl;
+
     for(const auto& sln : GetBNSolutions(ctx))
     {
-        // remove the user db files
-        fs::remove_all(miopen::GetCachePath(false));
         json res_item;
-        res_item["solver_name"] = sln.solver_id;
-        res_item["algorithm"]   = GetAlgorithm();
+        res_item["reason"]    = std::string("No solutions: ");
+        auto process_solution = [&]() -> bool {
+            // remove the user db files
+            fs::remove_all(miopen::GetCachePath(false));
+            std::cerr << "Processing Solver: " << sln.solver_id << std::endl;
+            if((job.contains("solvers") &&
+                (std::find(std::begin(job["solvers"]), std::end(job["solvers"]), sln.solver_id) !=
+                 std::end(job["solvers"]))) ||
+               (!job.contains("solvers")))
+            {
+                res_item["solver_name"] = sln.solver_id;
+                std::cout << sln.solver_id << std::endl;
+                std::cout << res_item["solver_name"] << std::endl;
+                const auto solver = miopen::fin_interface::GetBatchNormSolver(sln.solver_id);
 
-        res_item["workspace"] = sln.workspace_sz;
-        std::vector<miopen::solver::KernelInfo> kernels;
-        for(auto&& kernel : sln.construction_params) // cppcheck-suppress useStlAlgorithm
-            kernels.push_back(kernel);
-        std::ignore      = miopen::solver::PrecompileKernels(handle, kernels);
-        json kernel_list = json::array();
-        for(const auto& k : kernels)
-        {
-            json kernel;
-            auto comp_opts   = k.comp_options;
-            auto p           = handle.LoadProgram(k.kernel_file, comp_opts, "");
-            const auto hsaco = p.IsCodeObjectInMemory()
-                                   ? p.GetCodeObjectBlob()
-                                   : miopen::LoadFile(p.GetCodeObjectPathname().string());
-            if(hsaco.empty())
-            {
-                std::cerr << "Got empty code object" << std::endl;
-                throw std::runtime_error("Got empty code object");
+                if(!solver.IsValid())
+                {
+                    res_item["reason"] = "Solver not valid";
+                    std::cerr << "Skipping invalid solver: " << sln.solver_id << std::endl;
+                    return false;
+                }
+
+                res_item["algorithm"] = GetAlgorithm();
+
+                if(tuning_op == TuningOp::Perf)
+                {
+                    std::vector<miopen::solver::KernelInfo> kernels;
+                    for(auto&& kernel :
+                        sln.construction_params) // cppcheck-suppress useStlAlgorithm
+                        kernels.push_back(kernel);
+                    std::ignore = miopen::solver::PrecompileKernels(handle, kernels);
+
+                    res_item["kernel_objects"] = BuildJsonKernelList(handle, kernels);
+                }
+                else if(tuning_op == TuningOp::Find)
+                {
+                    //  NOTE: how to get params from solution?
+                    res_item["params"]    = solver.GetPerfCfgParams(ctx, problem, db);
+                    res_item["workspace"] = sln.workspace_sz;
+                    res_item["kernel_objects"] =
+                        BuildJsonKernelList(handle, sln.construction_params);
+                }
+                res_item["tunable"] = solver.IsTunable();
+                res_item["reason"]  = "Success";
+                return true;
             }
-            // Compress the blob
-            auto md5_sum             = miopen::md5(hsaco);
-            auto size                = hsaco.size();
-            bool success             = false;
-            auto compressed_hsaco    = miopen::compress(hsaco, &success);
-            const auto encoded_hsaco = base64_encode(compressed_hsaco);
-            kernel["kernel_file"]    = k.kernel_file;
-            kernel["comp_options"]   = k.comp_options;
-            if(success)
-            {
-                kernel["uncompressed_size"] = size;
-                kernel["md5_sum"]           = md5_sum;
-                kernel["blob"]              = encoded_hsaco;
-            }
-            else
-            {
-                kernel["md5_sum"]           = "Failed to compress kernel";
-                kernel["uncompressed_size"] = 0;
-                kernel["blob"]              = "";
-            }
-            kernel_list.push_back(kernel);
-            std::cerr << "Successfully added new kernel" << std::endl;
-        }
-        res_item["kernel_objects"] = kernel_list;
-        res_item["reason"]         = "Success";
-        res_item["find_compiled"]  = true;
-        find_result.push_back(res_item);
+            return false;
+        };
+
+        auto res = process_solution();
+
+        if(tuning_op == TuningOp::Perf)
+            res_item["perf_compiled"] = res;
+        if(tuning_op == TuningOp::Find)
+            res_item["find_compiled"] = res;
+        comp_res.push_back(res_item);
     }
-    output["miopen_find_compile_result"] = find_result;
+
+    if(tuning_op == TuningOp::Perf)
+        output["miopen_perf_compile_result"] = comp_res;
+    if(tuning_op == TuningOp::Find)
+        output["miopen_find_compile_result"] = comp_res;
     return 1;
+}
+
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+int BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::MIOpenEval(TuningOp tuning_op)
+{
+    std::cerr << "MIOpenEval" << std::endl;
+    std::cerr << "Processing command: " << command << std::endl;
+// Before this step is executed, the following steps should have been evaluated
+// alloc_buf only if only timing is required
+// alloc_buf, fill_buf and copy_buf_to_device if numerical accuracy would be
+// checked ??
+#if MIOPEN_MODE_NOGPU
+    throw std::runtime_error("Unable to run MIOpenEval, Invalid MIOpen backend: HIPNOGPU");
+#endif
+    const auto bn_dir = GetDirection();
+    // The first arg to the DataInvokeParams changes based on direction
+    const auto problem = GetProblemDescription();
+
+    GetHandle().EnableProfiling(true);
+    auto& h = GetHandle();
+    // cppcheck-suppress unreadVariable
+    auto ctx = miopen::ExecutionContext(&h);
+    ctx.SetStream(&(h));
+    // problem.SetupFloats(ctx); ?? not available in batchnorm::PD
+
+    output["is_winograd_only"] = false;
+    const auto network_config  = problem.MakeNetworkConfig();
+    output["network_config"]   = network_config;
+    std::ostringstream ss;
+    problem.Serialize(ss);
+    // output["db_key"] = ss.str();
+
+    auto db = GetDb(ctx, problem);
+    json eval_result;
+    const auto& tgt_props  = h.GetTargetProperties();
+    const std::string arch = tgt_props.Name();
+    const size_t num_cu    = h.GetMaxComputeUnits();
+    std::cerr << "Job Arch: " << job["arch"] << ": Handle Arch: " << arch << std::endl;
+    std::cerr << "Job Num CU: " << job["num_cu"] << ": Handle Num Cu: " << num_cu << std::endl;
+    bool dynamic_only = false;
+    if(job.contains("dynamic_only"))
+        ctx.use_dynamic_solutions_only = true;
+
+    std::string comp_res_str;
+    if(tuning_op == TuningOp::Perf)
+        comp_res_str = "miopen_perf_compile_result";
+    else if(tuning_op == TuningOp::Find)
+        comp_res_str = "miopen_find_compile_result";
+
+    for(const auto& solution : GetBNSolutions(ctx))
+    {
+        for(const auto& eval_slv : job[comp_res_str])
+        {
+            json res_item;
+            if(solution.solver_id == eval_slv)
+            {
+                auto process_solver = [&]() -> bool {
+                    // remove the user db files
+                    fs::remove_all(miopen::GetCachePath(false));
+                    std::cerr << "Processing Solver: " << solution.solver_id << std::endl;
+                    res_item["solver_name"] = solution.solver_id;
+                    const auto solver =
+                        miopen::fin_interface::GetBatchNormSolver(solution.solver_id);
+                    res_item["algorithm"] = GetAlgorithm();
+
+                    if(dynamic_only && !solver.IsDynamic())
+                    {
+                        res_item["reason"] = "Not Dynamic";
+                        std::cerr << "Skipping static solver: " << solution.solver_id << std::endl;
+                        return false;
+                    }
+
+                    // Get the binary
+                    std::cerr << "Applicable solver: " << solution.solver_id
+                              << ", loading binaries from fin input" << std::endl;
+                    if(!LoadJsonKernelList(h, eval_slv["kernel_objects"], res_item))
+                        return false;
+
+                    SolutionHasProgram(h, solution);
+
+                    std::cerr << "Checking workspace size" << std::endl;
+                    if(solution.workspace_sz > workspace.desc.GetNumBytes())
+                    {
+                        std::cerr << "Allocating " << solution.workspace_sz
+                                  << " bytes for workspace" << std::endl;
+                        workspace = tensor<TInput>{q,
+                                                   std::vector<size_t>{static_cast<size_t>(
+                                                       solution.workspace_sz / sizeof(TInput))},
+                                                   false,
+                                                   false};
+                        workspace.AllocateBuffers();
+                    }
+                    if(!solution.invoker_factory)
+                    {
+                        std::cerr << "Invoker not implemeted" << std::endl;
+                        res_item["reason"] = "Invoker not implemented";
+                        return false;
+                    }
+                    try
+                    {
+                        float kernel_time = -1;
+                        if(tuning_op == TuningOp::Perf)
+                            kernel_time = PerfTune(h, solution, db, ctx);
+                        else if(tuning_op == TuningOp::Find)
+                            kernel_time = FindTune(h, solution);
+
+                        json kern_objs = BuildJsonKernelList(h, solution.construction_params);
+
+                        res_item["tunable"]   = solver.IsTunable();
+                        res_item["params"]    = solver.GetPerfCfgParams(ctx, problem, db);
+                        res_item["workspace"] = solution.workspace_sz;
+                        res_item["time"]      = kernel_time;
+                        res_item["layout"]    = problem.GetInLayout();
+                        res_item["data_type"] = problem.GetXDesc().GetType();
+                        res_item["direction"] = bn_dir;
+                        // res_item["bias"]      = problem.GetBias(); dy?
+                        res_item["kernel_objects"] = kern_objs;
+                        res_item["reason"]         = "Success";
+                        if(kernel_time == 0.0)
+                            res_item["reason"] = "Invoker returned time = 0";
+                        if(kernel_time < 0)
+                            res_item["reson"] = "kernel_time not measured";
+                    }
+                    catch(const std::exception& e)
+                    {
+                        res_item["reason"] = std::string("Invoker exception: ") + e.what();
+                        std::cerr << res_item["reason"] << std::endl;
+                        return false;
+                    }
+
+                    return true;
+                };
+
+                auto res              = process_solver();
+                res_item["evaluated"] = res;
+                eval_result.push_back(res_item);
+            }
+
+        } // for each solver
+    }     // for each solution
+
+    if(tuning_op == TuningOp::Perf)
+        output["miopen_perf_eval_result"] = eval_result;
+    else if(tuning_op == TuningOp::Find)
+        output["miopen_find_eval_result"] = eval_result;
+    return 1;
+}
+
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+float BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::PerfTune(
+    const miopen::Handle& h,
+    const miopen::solver::ConvSolution& solution,
+    miopen::PerformanceDb& db,
+    miopen::ExecutionContext& perf_ctx)
+{
+
+    float kernel_time     = -1;
+    perf_ctx.do_search    = true;
+    perf_ctx.db_update    = true;
+    const auto invoke_ctx = GetInvokeCtx();
+    SolutionHasProgram(h, solution);
+
+    const auto invoker = h.PrepareInvoker(*solution.invoker_factory, solution.construction_params);
+    kernel_time        = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
+
+    return kernel_time;
+}
+
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+float BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::FindTune(
+    const miopen::Handle& h, const miopen::solver::ConvSolution& solution)
+{
+    float kernel_time     = -1;
+    const auto invoke_ctx = GetInvokeCtx();
+    const auto invoker = h.PrepareInvoker(*solution.invoker_factory, solution.construction_params);
+    kernel_time        = BaseFin::BenchmarkInvoker(invoker, h, invoke_ctx);
+    return kernel_time;
+}
+
+template <typename TInput, typename Tref, typename TAcc, typename TScaleBias, typename TOut>
+const miopen::AnyInvokeParams BNFin<TInput, Tref, TAcc, TScaleBias, TOut>::GetInvokeCtx()
+{
+    const auto invoke_ctx = [&] -> miopen::AnyInvokeParams {
+        const auto bn_dir = GetDirection();
+        if(bn_dir == miopen::debug::BatchNormDirection_t::ForwardTraining)
+        {
+            const auto ctx = [&]() {
+                auto tmp                  = miopen::batchnorm::FwdTrainInvokeParams{};
+                tmp.type                  = miopen::InvokeType::Run;
+                tmp.x                     = in.GetVectorData();
+                tmp.y                     = out.GetVectorData();
+                tmp.bnScale               = bnScale.GetVectorData();
+                tmp.bnBias                = bias.GetVectorData();
+                tmp.expAvgFactor          = expAvgFactor;
+                tmp.resultRunningMean     = runMean.GetVectorData();
+                tmp.resultRunningVariance = runVariance.GetVectorData();
+                tmp.epsilon               = epsilon;
+                tmp.resultSaveMean        = savedMean.GetVectorData();
+                tmp.resultSaveInvVariance = savedVariance.GetVectorData();
+                return tmp;
+            }();
+            return ctx;
+        }
+        else if(bn_dir == miopen::debug::BatchNormDirection_t::ForwardInference)
+        {
+            const auto ctx = [&]() {
+                auto tmp  = miopen::batchnorm::InfInvokeParams{};
+                tmp.type  = miopen::InvokeType::Run;
+                tmp.xDesc = &in.GetTensor().desc, tmp.x = in.GetVectorData();
+                tmp.y                 = out.GetVectorData();
+                tmp.bnScale           = bnScale.GetVectorData();
+                tmp.bnBias            = bias.GetVectorData();
+                tmp.estimatedMean     = estMean.GetVectorData();
+                tmp.estimatedVariance = estVariance.GetVectorData();
+                tmp.epsilon           = epsilon;
+                return tmp;
+            }();
+            return ctx;
+        }
+        else if(bn_dir == miopen::debug::BatchNormDirection_t::Backward)
+        {
+
+            const auto ctx = [&]() {
+                auto tmp    = miopen::batchnorm::BwdInvokeParams{};
+                tmp.type    = miopen::InvokeType::Run;
+                tmp.x       = in.GetVectorData();
+                tmp.dy      = dy.GetVectorData();      //??right tensor?
+                tmp.dx      = out_ref.GetVectorData(); //??right tensor?
+                tmp.bnScale = bnScale.GetVectorData();
+                // tmp.resultBnScaleDiff = resultBnScaleDiff; //??
+                // tmp.resultBnBiasDiff  = resultBnBiasDiff; //??
+                tmp.epsilon          = epsilon;
+                tmp.savedMean        = savedMean.GetVectorData();
+                tmp.savedInvVariance = savedVariance.GetVectorData();
+                return tmp;
+            }();
+            return ctx;
+        }
+        else
+        {
+            std::ostringstream ss;
+            ss << "Invalid Direction: " << static_cast<int>(bn_dir);
+            throw std::runtime_error(ss.str());
+        }
+    };
+    return invoke_ctx();
 }
 
 } // namespace fin

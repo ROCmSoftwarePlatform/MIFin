@@ -48,6 +48,7 @@
 #include <miopen/conv/data_invoke_params.hpp>
 #include <miopen/conv/wrw_invoke_params.hpp>
 #include <miopen/load_file.hpp>
+#include <miopen/fin/fin_interface.hpp>
 #include <numeric>
 #include <vector>
 
@@ -66,6 +67,11 @@ using json = nlohmann::json;
 namespace fin {
 
 const int INVOKE_LIMIT = 4;
+enum TuningOp
+{
+    Perf = 0,
+    Find = 1,
+};
 
 class BaseFin
 {
@@ -97,33 +103,49 @@ class BaseFin
     int GetSolverList()
     {
         std::vector<std::unordered_map<std::string, std::string>> solvers;
-        for(const auto& id :
-            miopen::solver::GetSolversByPrimitive(miopen::solver::Primitive::Convolution))
+        for(const auto& slv : miopen::fin_interface::GetAllConvSolvers())
         {
             std::unordered_map<std::string, std::string> solver;
-            solver["id"]      = std::to_string(id.Value());
-            solver["name"]    = id.ToString();
+            solver["id"]   = std::to_string(slv.GetId());
+            solver["name"] = slv.GetName();
+            std::cout << slv.GetName() << " " << slv.GetId() << " " << slv.IsValid() << std::endl;
             solver["tunable"] = "0";
             solver["dynamic"] = "0";
             solver["type"]    = "convolution";
-            if(id.GetSolver().IsTunable())
+            solver["valid"]   = "0";
+            if(slv.IsTunable())
                 solver["tunable"] = "1";
-            if(id.GetSolver().IsDynamic())
+            if(slv.IsDynamic())
                 solver["dynamic"] = "1";
+            if(slv.IsValid())
+                solver["valid"] = "1";
             solvers.push_back(solver);
         }
+        std::cout << "Got all Conv solvers" << std::endl;
 
-        for(const auto& id :
-            miopen::solver::GetSolversByPrimitive(miopen::solver::Primitive::Batchnorm))
+        for(const auto& slv : miopen::fin_interface::GetAllBatchNormSolvers())
         {
             std::unordered_map<std::string, std::string> solver;
-            solver["id"]      = std::to_string(id.Value());
-            solver["name"]    = id.ToString();
+            solver["id"]   = std::to_string(slv.GetId());
+            solver["name"] = slv.GetName();
+            std::cout << slv.GetName() << " " << slv.GetId() << " " << slv.IsValid() << std::endl;
             solver["tunable"] = "0";
             solver["dynamic"] = "0";
             solver["type"]    = "batch_norm";
+            solver["valid"]   = "0";
+            if(slv.IsTunable())
+                solver["tunable"] = "1";
+            if(slv.IsDynamic())
+                solver["dynamic"] = "1";
+            const auto bn_solver = miopen::fin_interface::GetBatchNormSolver(slv.GetName());
+            std::cout << slv.GetName() << " " << slv.GetId() << " " << bn_solver.IsValid()
+                      << std::endl;
+            if(bn_solver.IsValid())
+                solver["valid"] = "1";
             solvers.push_back(solver);
         }
+
+        std::cout << "Got all BN solvers" << std::endl;
 
         output["all_solvers"] = solvers;
         return 0;
@@ -201,6 +223,7 @@ class BaseFin
             {
                 comp_opts += " -mcpu=" + handle.GetDeviceName();
             }
+            comp_opts += " -mcpu=" + handle.GetDeviceName();
             auto hsaco = miopen::LoadBinary(handle.GetTargetProperties(),
                                             handle.GetMaxComputeUnits(),
                                             kern.kernel_file,
@@ -208,7 +231,10 @@ class BaseFin
 
             if(hsaco.empty())
             {
-                auto p = handle.LoadProgram(kern.kernel_file, kern.comp_options, "");
+                std::cout << "Kernel file: " << kern.kernel_file << std::endl;
+                std::cout << "K comp opts: " << kern.comp_options << std::endl;
+                comp_opts = kern.comp_options + " -mcpu=" + handle.GetDeviceName();
+                auto p    = handle.LoadProgram(kern.kernel_file, comp_opts, "");
 
                 try
                 {
@@ -293,6 +319,7 @@ class BaseFin
         }
     }
 
+    /*
     float BenchmarkInvoker(const miopen::Invoker& invoker,
                            const miopen::Handle& h,
                            const miopen::conv::DataInvokeParams& invoke_ctx)
@@ -333,7 +360,12 @@ class BaseFin
         kernel_time = ktimes[(ktimes.size() - 1) / 2];
         std::cerr << "kernel_time median : " << kernel_time << std::endl;
         return kernel_time;
-    }
+    }*/
+
+    template <typename Tgpu>
+    float BenchmarkInvoker(const miopen::Invoker& invoker,
+                           const miopen::Handle& h,
+                           const Tgpu& invoke_ctx);
 
     protected:
     template <typename Tgpu>
@@ -365,6 +397,28 @@ std::ostream& operator<<(std::ostream& os, const std::vector<T>& vs)
         os << v << " ";
     os << "}";
     return os;
+}
+
+template <typename Tgpu>
+float BaseFin::BenchmarkInvoker(const miopen::Invoker& invoker,
+                                const miopen::Handle& h,
+                                const Tgpu& invoke_ctx)
+{
+    float kernel_time;
+    std::vector<float> ktimes;
+    // warmup run
+    invoker(h, invoke_ctx);
+    for(auto idx = 0; idx < INVOKE_LIMIT; idx++)
+    {
+        invoker(h, invoke_ctx);
+        kernel_time = h.GetKernelTime();
+        ktimes.push_back(kernel_time);
+        std::cerr << "kernel_time : " << kernel_time << std::endl;
+    }
+    sort(ktimes.begin(), ktimes.end());
+    kernel_time = ktimes[(ktimes.size() - 1) / 2];
+    std::cerr << "kernel_time median : " << kernel_time << std::endl;
+    return kernel_time;
 }
 } // namespace fin
 #endif // GUARD_FIN_HPP

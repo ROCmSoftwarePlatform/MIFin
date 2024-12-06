@@ -57,7 +57,7 @@ TEST(MemoryLayoutTest, BasicMemLayoutBatchNorm)
         if(command["config"]["cmd"] == "bnorm")
         {
             fin::BNFin<float, float> tmp(command);
-            ASSERT_TRUE(tmp.inputTensor.desc.GetLayout_t() ==
+            ASSERT_TRUE(tmp.in.GetTensor().desc.GetLayout_t() ==
                         miopenTensorLayout_t::miopenTensorNCHW);
             try
             {
@@ -67,7 +67,7 @@ TEST(MemoryLayoutTest, BasicMemLayoutBatchNorm)
             {
                 EXPECT_EQ(err.what(),
                           std::string("Provided memory layout is :" +
-                                      std::string(command["config"]["in_layout"]) +
+                                      std::string(command["config"]["layout"]) +
                                       ". Batch norm only support default NCHW"));
             }
         }
